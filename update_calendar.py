@@ -30,7 +30,14 @@ import os
 import re
 import sys
 import glob
-import datetime
+
+# 윈도우 한글 콘솔에서 특수문자(★, 화살표 등)를 출력해도 오류로 멈추지 않도록,
+# 화면 출력 인코딩을 UTF-8로 맞추고, 표현 불가 문자는 대체하도록 설정합니다.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 # ------------------------------------------------------------------------------
 # [설정] 여기 값만 필요할 때 바꾸면 됩니다. (보통은 그대로 두세요)
@@ -336,12 +343,10 @@ def main():
     if not 양식_경로 or not os.path.exists(양식_경로):
         print("\n[오류] 엑셀 양식 파일(.xlsx)을 찾지 못했습니다.")
         print("       이 프로그램과 같은 폴더에 엑셀 양식 파일을 넣어 주세요.")
-        input("\n엔터 키를 누르면 종료합니다...")
         sys.exit(1)
     if not pdf_경로 or not os.path.exists(pdf_경로):
         print("\n[오류] PDF 파일(.pdf)을 찾지 못했습니다.")
         print("       이 프로그램과 같은 폴더에 이번 달 PDF 파일을 넣어 주세요.")
-        input("\n엔터 키를 누르면 종료합니다...")
         sys.exit(1)
 
     print("\n[사용할 파일]")
@@ -363,7 +368,7 @@ def main():
     else:
         print("\n[찾은 월간 공통 혜택] 총 {}건".format(len(추출로그)))
         for 제목, _ in 추출로그:
-            print("   ✓", 제목)
+            print("   - ", 제목)
 
     # 4) 주차 칸에 넣을 내용 만들기
     #    - 월간 공통 혜택은 '모든 주차'에 유효하므로 5칸 모두에 넣습니다.
@@ -377,7 +382,7 @@ def main():
     결과_경로 = os.path.join(기준폴더, 결과이름)
     엑셀에_쓰기(양식_경로, 결과_경로, 셀내용)
     print("\n[완료] 새 엑셀 파일을 만들었습니다:")
-    print("   →", 결과이름)
+    print("   ->", 결과이름)
 
     # 6) 검토용 텍스트 파일 만들기
     검토이름 = "{}_{}_검토용.txt".format(양식이름, 꼬리.replace(" ", ""))
@@ -420,19 +425,27 @@ def main():
             f.write("(특정 날짜 행사 후보를 찾지 못했습니다.)\n")
 
     print("[완료] 검토용 파일도 만들었습니다:")
-    print("   →", 검토이름)
+    print("   ->", 검토이름)
 
     print("\n" + "=" * 60)
     print(" 끝났습니다! 결과 엑셀 파일을 열어 확인해 주세요.")
     print(" (특정 날짜 행사는 검토용 파일을 보고 필요하면 직접 추가하세요.)")
     print("=" * 60)
 
-    # 윈도우에서 더블클릭으로 실행했을 때 창이 바로 닫히지 않도록
-    try:
-        input("\n엔터 키를 누르면 종료합니다...")
-    except Exception:
-        pass
-
 
 if __name__ == "__main__":
-    main()
+    # 오류가 나더라도 무슨 일인지 화면에 보여 줍니다.
+    # (창을 열어두고 멈추는 일은 '실행하기.bat'이 담당합니다.)
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as e:
+        print("\n" + "!" * 60)
+        print("[예상치 못한 오류가 발생했습니다]")
+        print("  ", repr(e))
+        print("  아래 내용을 캡처해 담당자에게 보여 주시면 도움이 됩니다.")
+        print("!" * 60)
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
