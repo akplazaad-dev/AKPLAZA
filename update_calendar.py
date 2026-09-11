@@ -1,28 +1,32 @@
 # -*- coding: utf-8 -*-
 """
 ================================================================================
- AK PLAZA 카드 사은혜택 자동 입력 프로그램
+ AK PLAZA 카드 사은혜택 자동 입력 프로그램  (PPT / PDF 지원)
 ================================================================================
 
 [이 프로그램이 하는 일]
-  1) 이번 달 "제휴 판촉 캘린더" PDF 파일에서 카드 사은혜택 내용을 읽어옵니다.
-  2) 엑셀 양식 파일의 노란색 칸(주차별 "지원 사항" 칸)에 그 내용을 채워 넣습니다.
+  1) 이번 달 "제휴 판촉 캘린더" 파일(PPT 권장, PDF도 가능)에서
+     카드 사은혜택 내용을 읽어옵니다.
+  2) 엑셀 양식의 노란색 칸(주차별 "지원 사항" 칸)에 그 내용을 채워 넣습니다.
+     - 월간(한 달 내내) 공통 혜택 → 5개 주차 칸 모두에
+     - 특정 날짜 행사 → 날짜가 속한 그 주차 칸에만
   3) 원본은 그대로 두고, 내용이 채워진 "새 엑셀 파일"을 만들어 줍니다.
   4) 사람이 눈으로 확인하기 좋게 "검토용 텍스트 파일"도 함께 만들어 줍니다.
+
+[왜 PPT를 권장하나요?]
+  PDF는 글자를 화면 위치 순서로 뽑아, 이미지에 겹친 행사 글자가 뒤섞일 수
+  있습니다. PPT는 글상자마다 글자가 온전히 남아 있어, 특정 날짜 행사까지
+  정확하게 읽어 각 주차에 배치할 수 있습니다.
 
 [사용 방법 - 아주 간단하게]
   - 이 프로그램 파일과 같은 폴더에
       · 엑셀 양식 파일 1개 (예: 사전고지_양식.xlsx)
-      · 이번 달 PDF 파일 1개
-    를 넣어 두고 프로그램을 실행하면 됩니다.
+      · 이번 달 PPT 파일 1개 (없으면 PDF 파일)
+    를 넣어 두고 "실행하기.bat" 을 더블클릭하면 됩니다.
   - 자세한 설치/실행 방법은 함께 들어 있는 "사용설명서.md" 파일을 보세요.
 
-  (고급) 파일 위치를 직접 지정하고 싶으면:
-      python update_calendar.py  "양식.xlsx"  "이번달.pdf"
-
---------------------------------------------------------------------------------
- 코딩을 모르셔도 됩니다. 아래 내용은 "설정" 부분만 살짝 바꾸면 되고,
- 나머지는 건드리지 않아도 잘 동작합니다.
+  (고급) 파일을 직접 지정하려면:
+      python update_calendar.py  "양식.xlsx"  "이번달.pptx"
 --------------------------------------------------------------------------------
 """
 
@@ -31,8 +35,7 @@ import re
 import sys
 import glob
 
-# 윈도우 한글 콘솔에서 특수문자(★, 화살표 등)를 출력해도 오류로 멈추지 않도록,
-# 화면 출력 인코딩을 UTF-8로 맞추고, 표현 불가 문자는 대체하도록 설정합니다.
+# 윈도우 한글 콘솔에서 특수문자를 출력해도 오류로 멈추지 않도록 설정합니다.
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -43,399 +46,530 @@ except Exception:
 # [설정] 여기 값만 필요할 때 바꾸면 됩니다. (보통은 그대로 두세요)
 # ------------------------------------------------------------------------------
 
-# 엑셀에서 내용을 채울 시트(탭) 이름
-SHEET_NAME = "사전고지(본부)"
+SHEET_NAME = "사전고지(본부)"                      # 내용을 채울 시트(탭) 이름
+YELLOW_CELLS = ["H9", "H14", "H18", "H22", "H26"]  # 1~5주차 노란색 칸 위치
+PERIOD_CELLS = ["E6", "E11", "E15", "E19", "E23"]  # 1~5주차 '기간' 칸 위치
 
-# 노란색 칸(주차별 "지원 사항" 칸)이 있는 셀 위치입니다.
-# 왼쪽부터: 1주차, 2주차, 3주차, 4주차, 5주차
-YELLOW_CELLS = ["H9", "H14", "H18", "H22", "H26"]
-
-# 각 주차의 "기간" 정보가 들어 있는 셀 위치입니다.
-# (엑셀에서 자동으로 읽어오지만, 못 읽을 경우를 대비한 위치입니다.)
-PERIOD_CELLS = ["E6", "E11", "E15", "E19", "E23"]
+# 특정 날짜 행사에서 카드사로 인정할 낱말들
+CARD_KW = ("신한", "네이버", "KB", "NH", "PAYCO", "페이", "일반", "BC", "카카오")
 
 
 # ==============================================================================
-# 아래부터는 프로그램 본체입니다. (수정하지 않아도 됩니다)
+# 공통 도우미 함수
 # ==============================================================================
 
-def 필수라이브러리_확인():
-    """PDF/엑셀을 다루는 데 필요한 부품(라이브러리)이 설치돼 있는지 확인합니다."""
-    부족 = []
-    try:
-        import pdfplumber  # noqa: F401
-    except Exception:
-        부족.append("pdfplumber")
-    try:
-        import openpyxl  # noqa: F401
-    except Exception:
-        부족.append("openpyxl")
-    if 부족:
-        print("[오류] 다음 프로그램 부품이 설치되어 있지 않습니다:", ", ".join(부족))
-        print("       먼저 '최초설치.bat' 파일을 한 번 실행해 주세요.")
-        print("       (또는 명령창에서:  pip install " + " ".join(부족) + " )")
-        sys.exit(1)
+def sp(s):
+    """여러 칸의 공백을 한 칸으로 정리합니다."""
+    return re.sub(r"[ \t]+", " ", str(s)).strip()
 
 
-def 공백정리(s):
-    """여러 칸의 공백/줄바꿈을 한 칸 공백으로 정리합니다."""
-    return re.sub(r"\s+", " ", s).strip()
+def md(m, d):
+    """월/일을 비교하기 쉬운 숫자로: 10월 5일 → 1005"""
+    return m * 100 + d
 
 
-def PDF에서_글자읽기(pdf_경로):
-    """PDF 파일에서 모든 글자를 읽어 옵니다."""
+def 날짜구간_파싱(txt):
+    """'10/2~5', '10/16~22', '10/30~11/1', '10/1~31' → (시작, 끝) 숫자. 없으면 None."""
+    m = re.search(r"(\d{1,2})/(\d{1,2})\s*~\s*(?:(\d{1,2})/)?(\d{1,2})", txt)
+    if not m:
+        return None
+    m1, d1 = int(m.group(1)), int(m.group(2))
+    m2 = int(m.group(3)) if m.group(3) else m1
+    d2 = int(m.group(4))
+    return (md(m1, d1), md(m2, d2))
+
+
+def 기간정리(paren):
+    """'월간, 수/분/평/원, 점-페이각 50%' → '월간, 수/분/평/원' 처럼 앞부분만 남깁니다."""
+    inner = sp(paren)
+    m = re.match(r"(월간|\d{1,2}/\d{1,2}[~\d/]*)\s*,\s*([수분평원광/]+)", inner)
+    return "{}, {}".format(m.group(1), m.group(2)) if m else inner
+
+
+def 카드사_정리(s):
+    """'신한 Plus 발급 ①' → '신한Plus 발급①' 처럼 보기 좋게 다듬습니다."""
+    return (sp(s).replace("신한 Plus", "신한Plus")
+                 .replace("발급 ①", "발급①").replace("발급 ②", "발급②"))
+
+
+# ==============================================================================
+# 주차 범위 읽기 (엑셀의 '기간' 칸에서)
+# ==============================================================================
+
+def 주차범위_읽기(ws, 월):
+    """
+    엑셀 E칸('10월 1주차 10/1~10/7')에서 주차별 (시작,끝) 날짜를 읽어옵니다.
+    못 읽으면 그 달 기준의 기본값으로 대체합니다.
+    """
+    구간 = []
+    for cell in PERIOD_CELLS:
+        try:
+            v = str(ws[cell].value or "")
+        except Exception:
+            v = ""
+        m = re.search(r"(\d{1,2})/(\d{1,2})\s*~\s*(?:(\d{1,2})/)?(\d{1,2})", v)
+        if m:
+            m1, d1 = int(m.group(1)), int(m.group(2))
+            m2 = int(m.group(3)) if m.group(3) else m1
+            d2 = int(m.group(4))
+            구간.append((md(m1, d1), md(m2, d2)))
+        else:
+            구간.append(None)
+    # 하나라도 못 읽었으면, 못 읽은 칸만 넉넉한 기본값으로 채웁니다.
+    for i, g in enumerate(구간):
+        if g is None:
+            구간[i] = (md(월 or 1, 1), md((월 or 1) + 1, 5))
+    return 구간
+
+
+def 주차찾기(rng, 주차구간):
+    """날짜 구간이 겹치는 주차 번호(0~4) 목록. 날짜가 없으면 모든 주차."""
+    if rng is None:
+        return list(range(len(주차구간)))
+    s, e = rng
+    return [i for i, g in enumerate(주차구간) if g and s <= g[1] and e >= g[0]]
+
+
+# ==============================================================================
+# PPT(.pptx) 읽기
+# ==============================================================================
+
+def PPT_도형텍스트(pptx_경로):
+    """PPT의 모든 글상자 텍스트를 목록으로 돌려줍니다(그룹 안까지)."""
+    from pptx import Presentation
+
+    def 안쪽텍스트(shape):
+        if shape.shape_type == 6:  # GROUP
+            return "\n".join(안쪽텍스트(s) for s in shape.shapes).strip()
+        return shape.text_frame.text if shape.has_text_frame else ""
+
+    prs = Presentation(pptx_경로)
+    결과 = []
+    for slide in prs.slides:
+        for s in slide.shapes:
+            if getattr(s, "has_table", False):
+                continue
+            t = 안쪽텍스트(s)
+            if t and t.strip():
+                결과.append(t)
+    return 결과
+
+
+def PPT_월간혜택(도형들):
+    """PPT에서 '한 달 내내 유효한' 공통 혜택을 뽑습니다. (순서, 문장덩어리) 목록."""
+    항목 = []      # (정렬순서, 덩어리)
+    로그 = []      # (제목,)
+
+    def 넣기(순서, 제목, 줄들):
+        항목.append((순서, "\n".join(줄들)))
+        로그.append(제목)
+
+    for t in 도형들:
+        L0 = sp(t.split("\n")[0])
+        t1 = sp(t.replace("\n", " "))
+        c = L0.replace(" ", "")   # 공백 제거본(판별용)
+
+        if "발급①" in c and c.startswith("[신한"):
+            m = re.match(r"\[([^\]]+)\]\s*(.+?)\s*\[([^\]]+)\]\s*\(([^)]+)\)", L0)
+            if m:
+                넣기(1, "신한Plus 발급①",
+                    ["ㆍ[{}] {} ({})".format(카드사_정리(m.group(1)), sp(m.group(2)), sp(m.group(3))),
+                     "※ {}".format(기간정리(m.group(4)))])
+
+        elif "발급②" in c and c.startswith("[신한"):
+            m = re.match(r"\[([^\]]+)\]\s*(.+?)\s*\(([^)]+)\)", L0)
+            if m:
+                본문 = sp(m.group(2)).replace(" / ", "/")
+                줄들 = ["ㆍ[{}] {}".format(카드사_정리(m.group(1)), 본문)]
+                상세 = re.search(r"(\(신규 ?발급\).*?증정\s*\))", t1)
+                if 상세:
+                    줄들.append("※ {}".format(sp(상세.group(1)).replace(" / ", "/")))
+                줄들.append("※ {}".format(기간정리(m.group(3))))
+                넣기(2, "신한Plus 발급②", 줄들)
+
+        elif "정기]" in c and c.startswith("[신한"):
+            m = re.match(r"\[([^\]]+)\]\s*(.+?)\s*\[([^\]]+)\]\s*\(([^)]+)\)", L0)
+            if m:
+                넣기(3, "신한Plus 정기",
+                    ["ㆍ[{}] {} ({})".format(카드사_정리(m.group(1)), sp(m.group(2)), sp(m.group(3))),
+                     "※ {}".format(기간정리(m.group(4)))])
+
+        elif c.startswith("[PAYCO"):
+            순번 = 4
+            for mm in re.finditer(r"[①②③]\s*(.+?)\s*\[([^\]]+)\]\s*\(([^)]+)\)", t1):
+                본문, 혜택, 기간 = sp(mm.group(1)), sp(mm.group(2)), mm.group(3)
+                if "평일" in 혜택:
+                    줄들 = ["ㆍ[PAYCO(포인트)] {} (7~10%)".format(본문)]
+                    pr = re.search(r"평일\s*\d+%\s*,?\s*주말\s*\d+%", 혜택)
+                    if pr:
+                        줄들.append("※ {}".format(sp(pr.group(0))))
+                    줄들.append("※ {}".format(기간정리(기간)))
+                else:
+                    줄들 = ["ㆍ[PAYCO(포인트)] {} ({})".format(본문, 혜택),
+                           "※ {}".format(기간정리(기간))]
+                넣기(순번, "PAYCO 포인트", 줄들)
+                순번 += 0.1
+
+        elif "가전단일" in c:
+            m = re.match(r"\[([^\]]+)\]\s*(가전.+?)\s*\[([^\]]+)\].*?\(([^)]*\d/\d[^)]*)\)", L0)
+            if m:
+                넣기(7, "가전",
+                    ["ㆍ[{}] {} ({})".format(sp(m.group(1)), sp(m.group(2)), sp(m.group(3))),
+                     "※ 신한P 네이버페이 등록 시 증정률 +1%",
+                     "※ {}".format(기간정리(m.group(4)))])
+
+        elif "가구단일" in c:
+            m = re.match(r"\[([^\]]+)\]\s*(가구.+?)\s*\[([^\]]+)\].*?\(([^)]*\d/\d[^)]*)\)", L0)
+            if m:
+                넣기(8, "가구",
+                    ["ㆍ[{}] {} ({})".format(sp(m.group(1)), sp(m.group(2)), sp(m.group(3))),
+                     "※ 신한P 네이버페이 등록 시 증정률 +1%",
+                     "※ 일부 참여브랜드 9%",
+                     "※ {}".format(기간정리(m.group(4)))])
+
+    항목.sort(key=lambda x: x[0])
+    return [c for _, c in 항목], 로그
+
+
+def PPT_날짜행사(도형들, 주차구간):
+    """
+    PPT에서 '특정 날짜 행사'를 뽑아, 각 행사가 속한 주차에 배치합니다.
+    돌려주는 값: 주차별 목록 [[1주차행사들], [2주차...], ...]
+    """
+    주차별 = [[] for _ in 주차구간]
+    로그 = []
+
+    for t in 도형들:
+        L0 = sp(t.split("\n")[0])
+        if ("☆" not in t) and (not re.match(r"[②③]\s*\[", L0)):
+            continue
+
+        t1 = sp(t.replace("\n", " "))
+        t1 = re.sub(r"★\s*[^ ]*?억", "", t1)                       # ★0.6억 등 예산 제거
+        t1 = re.sub(r"★\s*신한[^,]*?/\s*네이버[^ ]*억", "", t1)    # A*CLASS식 예산 제거
+
+        nm = re.search(r"☆\s*(.+?)\s*★", t)
+        행사명 = sp(nm.group(1)) if nm else ("멤버스 페스티벌" if "멤페" in t else "행사")
+
+        parens = list(re.finditer(r"\((\d{1,2}/\d{1,2}[^)]*)\)", t1))
+        cur = 0
+        for pm in parens:
+            seg = t1[cur:pm.start()]
+            cur = pm.end()
+            날짜점포 = sp(pm.group(1))
+
+            대상들 = re.findall(
+                r"([가-힣A-Za-z*]+(?:\s[가-힣A-Za-z*]+)*\s*(?:합산|단일)\s*[\d/,~]+\s*만?)", seg)
+            if not 대상들:
+                continue
+            본문 = sp(대상들[-1])
+
+            혜택들 = re.findall(r"\[([^\]]*\d+\s*%[^\]]*)\]", seg)
+            카드들 = [b for b in re.findall(r"\[([^\]]+)\]", seg)
+                     if any(k in b for k in CARD_KW)]
+            카드사 = sp(카드들[-1]) if 카드들 else ""
+
+            혜택률 = sp(혜택들[-1]) if 혜택들 else ""
+            if not 혜택률 and 카드사 and "%" in 카드사:
+                혜택률 = 카드사
+            # 혜택률 문자열에 카드/조건 글자가 섞이면 숫자%만 혜택률로, 나머지는 카드사로
+            if 혜택률 and any(k in 혜택률 for k in CARD_KW):
+                rm = re.search(r"\d+\s*%", 혜택률)
+                카드사 = sp(re.sub(r"\d+\s*%", "", 혜택률)).rstrip("시 ").strip()
+                혜택률 = sp(rm.group(0)) if rm else ""
+
+            머리 = "ㆍ[{}] ".format(행사명)
+            if 카드사:
+                머리 += "[{}] ".format(카드사)
+            머리 += 본문 + ((" ({})".format(혜택률)) if 혜택률 else "")
+
+            줄들 = [머리]
+            노트 = re.search(r"신한P\s*\d+%\s*,\s*네이버페이\s*\d+%", seg)
+            if 노트:
+                줄들.append("※ {}".format(sp(노트.group(0))))
+            줄들.append("※ {}".format(날짜점포))
+
+            rng = 날짜구간_파싱(날짜점포)
+            덩어리 = "\n".join(줄들)
+            로그.append((행사명, 날짜점포))
+            for w in 주차찾기(rng, 주차구간):
+                주차별[w].append((rng[0] if rng else 0, 덩어리))
+
+    # 각 주차 안에서 날짜 순으로 정렬
+    for w in range(len(주차별)):
+        주차별[w].sort(key=lambda x: x[0])
+        주차별[w] = [c for _, c in 주차별[w]]
+    return 주차별, 로그
+
+
+# ==============================================================================
+# PDF(.pdf) 읽기 (PPT가 없을 때의 대비책 - 월간 공통 혜택만 추출)
+# ==============================================================================
+
+def PDF_글자(pdf_경로):
     import pdfplumber
-    모든글자 = []
+    글자 = []
     with pdfplumber.open(pdf_경로) as pdf:
         for page in pdf.pages:
-            t = page.extract_text() or ""
-            모든글자.append(t)
-    return "\n".join(모든글자)
+            글자.append(page.extract_text() or "")
+    return "\n".join(글자)
 
 
-def 연월_찾기(글자):
-    """PDF 제목에서 '26년 10월' 같은 연/월을 찾습니다. 못 찾으면 (None, None)."""
-    m = re.search(r"(\d{2})\s*년\s*(\d{1,2})\s*월", 글자)
-    if m:
-        return int(m.group(1)), int(m.group(2))
-    return None, None
+def PDF_월간혜택(글자):
+    """PDF에서 월간 공통 혜택만 추출합니다(줄 겹침 때문에 날짜 행사는 검토용으로만)."""
+    한줄 = sp(글자.replace("\n", " "))
+    항목, 로그 = [], []
 
+    def 넣기(제목, 줄들):
+        항목.append("\n".join(줄들)); 로그.append(제목)
 
-# ------------------------------------------------------------------------------
-# 월간(한 달 내내 유효한) 공통 사은혜택 추출 규칙
-#   - 이 판촉 캘린더는 매달 같은 양식으로 나오기 때문에,
-#     아래처럼 항목별로 "찾는 규칙"을 정해두면 매달 잘 동작합니다.
-#   - 규칙은 (이름, 찾는패턴, 만드는함수) 형태입니다.
-#   - 어떤 달에 특정 항목이 없으면 그 항목은 그냥 건너뜁니다(오류 없음).
-# ------------------------------------------------------------------------------
-
-def _금액정리(s):
-    """'20/40/60/100/200만' 처럼 붙어 있는 금액을 보기 좋게 그대로 둡니다."""
-    return s.strip()
-
-
-def 월간혜택_추출(글자, 월):
-    """
-    PDF 글자에서 '한 달 내내 유효한' 공통 사은혜택을 뽑아
-    보기 좋은 문장 목록으로 만들어 돌려줍니다.
-    각 항목은 '한 덩어리 문자열'(여러 줄 포함)입니다.
-    """
-    # 줄바꿈을 공백으로 바꿔 한 줄로 이어 붙입니다(줄 걸침 문제 방지).
-    한줄 = 공백정리(글자.replace("\n", " "))
-    항목들 = []          # 최종 결과(문장 덩어리 목록)
-    추출로그 = []        # 검토용: 무엇을 찾았는지 기록
-
-    def 추가(제목, 본문줄들, 원본=""):
-        덩어리 = "\n".join(본문줄들)
-        항목들.append(덩어리)
-        추출로그.append((제목, 원본))
-
-    # 1) 신한Plus 발급①  (예: 전관 합산 20/40/60/100/200만 [15% 상품권1매])
     m = re.search(r"\[신한Plus 발급①\][^\[]*?(전관\s*합산\s*[\d/]+만)\s*\[([^\]]+)\]\s*\(([^)]*)\)", 한줄)
     if m:
-        금액, 혜택, 기간 = _금액정리(m.group(1)), m.group(2).strip(), m.group(3).strip()
-        금액 = 금액.replace("전관합산", "전관 합산 ").replace("전관 합산  ", "전관 합산 ")
-        추가("신한Plus 발급①",
-             ["ㆍ[신한Plus 발급①] {} ({})".format(금액, 혜택),
-              "※ {}".format(기간)],
-             m.group(0))
-
-    # 2) 신한Plus 발급②  (첫결제 조건 충족 시 모바일상품권/캐시백)
+        넣기("신한Plus 발급①", ["ㆍ[신한Plus 발급①] {} ({})".format(sp(m.group(1)), sp(m.group(2))),
+                              "※ {}".format(sp(m.group(3)))])
     m = re.search(r"\[신한Plus 발급②\]\s*(전관합산[^\[]*?캐시백)", 한줄)
     if m:
-        본문 = (m.group(1)
-                .replace("전관합산", "전관 합산 ")
-                .replace("첫결제조건충족시", "첫결제 조건 충족 시 ")
-                .replace("/ ", "/"))
-        본문 = 공백정리(본문)
-        # 신규/재발급 상세 금액
+        본문 = sp(m.group(1)).replace("첫결제조건충족시", "첫결제 조건 충족 시 ").replace("/ ", "/")
         상세 = re.search(r"(\(신규발급\).*?\(익월말[^)]*\))", 한줄)
-        상세줄 = 공백정리(상세.group(1)).replace("/ ", "/") if 상세 else ""
-        줄들 = ["ㆍ[신한Plus 발급②] {}".format(본문)]
-        if 상세줄:
-            줄들.append("※ {}".format(상세줄))
+        줄들 = ["ㆍ[신한Plus 발급②] {}".format(sp(본문))]
+        if 상세:
+            줄들.append("※ {}".format(sp(상세.group(1)).replace("/ ", "/")))
         줄들.append("※ 월간, 수/분/평/원")
-        추가("신한Plus 발급②", 줄들, m.group(0))
-
-    # 3) 신한Plus 정기  (APP쿠폰 전관 단일 10만 [10%])
+        넣기("신한Plus 발급②", 줄들)
     m = re.search(r"\[신한Plus 정기\]\s*(APP쿠폰전관단일[\d/]+만)\s*\[([^\]]+)\]\s*\(([^)]*)\)", 한줄)
     if m:
-        본문 = m.group(1).replace("APP쿠폰전관단일", "APP쿠폰 전관 단일 ")
-        추가("신한Plus 정기",
-             ["ㆍ[신한Plus 정기] {} ({})".format(본문, m.group(2).strip()),
-              "※ {}".format(m.group(3).strip())],
-             m.group(0))
-
-    # 4) PAYCO(포인트) ①  (전관 합산, 평일/주말 상향)
-    m1 = re.search(r"①\s*(전관합산[\d/]+만)\s*\[([^\]]+)\]\s*\(([^)]*)\)", 한줄)
-    if m1:
-        금액 = m1.group(2).strip()  # 예: 평일7%, 주말10% 상향
-        기간 = m1.group(3).strip()
-        본문 = m1.group(1).replace("전관합산", "전관 합산 ")
-        # 대표 혜택률(예: 7~10%)을 제목에 넣고, 평일/주말은 부가설명으로
-        줄들 = ["ㆍ[PAYCO(포인트)] {} (7~10%)".format(본문)]
-        평주 = re.search(r"평일\s*\d+%\s*,?\s*주말\s*\d+%", 금액)
-        if 평주:
-            평주문 = 공백정리(평주.group(0))
-            if "," not in 평주문:                      # '평일7% 주말10%' → '평일7%, 주말10%'
-                평주문 = 평주문.replace(" 주말", ", 주말")
-            줄들.append("※ {}".format(평주문))
-        줄들.append("※ {}".format(기간))
-        추가("PAYCO 포인트 ①(전관)", 줄들, m1.group(0))
-
-    # 5) PAYCO(포인트) ②  (해외명품/골드바 단일)
-    m2 = re.search(r"②\s*(해외명품/골드바단일[\d~,]+만)\s*\[([^\]]+)\]\s*\(([^)]*)\)", 한줄)
-    if m2:
-        본문 = m2.group(1).replace("해외명품/골드바단일", "해외명품/골드바 단일 ")
-        추가("PAYCO 포인트 ②(해외명품/골드바)",
-             ["ㆍ[PAYCO(포인트)] {} ({})".format(본문, m2.group(2).strip()),
-              "※ {}".format(m2.group(3).strip())],
-             m2.group(0))
-
-    # 6) PAYCO(포인트) ③  (무신사/나이키 단일)
-    m3 = re.search(r"③\s*(무신사/나이키단일[\d/]+만)\s*\[([^\]]+)\]", 한줄)
-    if m3:
-        본문 = m3.group(1).replace("무신사/나이키단일", "무신사/나이키 단일 ")
-        # 이 줄은 PDF에서 옆 칸(패션그룹/KEY MD) 글자와 겹쳐 깨져 나오므로,
-        # 기간은 다른 PAYCO 항목과 같은 기본값('월간, 수/분/평/원')을 사용합니다.
-        기간 = "월간, 수/분/평/원"
-        추가("PAYCO 포인트 ③(무신사/나이키)",
-             ["ㆍ[PAYCO(포인트)] {} ({})".format(본문, m3.group(2).strip()),
-              "※ {}".format(기간)],
-             m3.group(0))
-
-    # 7) 가전  ([네이버페이/NH] 가전 단일 ...)
-    #    날짜(예: 10/1~31)는 '★0.5억(10/1~31, ...)'처럼 괄호 안에 들어 있어,
-    #    혜택률 다음에 나오는 '날짜가 든 첫 괄호'를 찾습니다.
+        넣기("신한Plus 정기", ["ㆍ[신한Plus 정기] {} ({})".format(sp(m.group(1)), sp(m.group(2))),
+                            "※ {}".format(sp(m.group(3)))])
+    m = re.search(r"①\s*(전관합산[\d/]+만)\s*\[([^\]]+)\]\s*\(([^)]*)\)", 한줄)
+    if m:
+        줄들 = ["ㆍ[PAYCO(포인트)] {} (7~10%)".format(sp(m.group(1)))]
+        pr = re.search(r"평일\s*\d+%\s*,?\s*주말\s*\d+%", m.group(2))
+        if pr:
+            줄들.append("※ {}".format(sp(pr.group(0))))
+        줄들.append("※ {}".format(sp(m.group(3))))
+        넣기("PAYCO 포인트 ①", 줄들)
+    m = re.search(r"②\s*(해외명품/골드바단일[\d~,]+만)\s*\[([^\]]+)\]\s*\(([^)]*)\)", 한줄)
+    if m:
+        넣기("PAYCO 포인트 ②", ["ㆍ[PAYCO(포인트)] {} ({})".format(sp(m.group(1)), sp(m.group(2))),
+                             "※ {}".format(sp(m.group(3)))])
+    m = re.search(r"③\s*(무신사/나이키단일[\d/]+만)\s*\[([^\]]+)\]", 한줄)
+    if m:
+        넣기("PAYCO 포인트 ③", ["ㆍ[PAYCO(포인트)] {} ({})".format(sp(m.group(1)), sp(m.group(2))),
+                             "※ 월간, 수/분/평/원"])
     m = re.search(r"\[네이버페이/NH\]\s*(가전단일[\d/,]+만)\s*\[([^\]]+)\].*?\(([^)]*\d{1,2}/\d{1,2}~[^)]*)\)", 한줄)
     if m:
-        본문 = m.group(1).replace("가전단일", "가전 단일 ")
-        줄들 = ["ㆍ[네이버페이/NH] {} ({})".format(본문, m.group(2).strip()),
-               "※ 신한P 네이버페이 등록 시 증정률 +1%",
-               "※ {}".format(공백정리(m.group(3)))]
-        추가("가전", 줄들, m.group(0))
-
-    # 8) 가구  ([네이버페이/NH] 가구 단일 ...)
+        넣기("가전", ["ㆍ[네이버페이/NH] {} ({})".format(sp(m.group(1)), sp(m.group(2))),
+                    "※ 신한P 네이버페이 등록 시 증정률 +1%", "※ {}".format(sp(m.group(3)))])
     m = re.search(r"\[네이버페이/NH\]\s*(가구단일[\d/,]+만)\s*\[([^\]]+)\].*?\(([^)]*\d{1,2}/\d{1,2}~[^)]*)\)", 한줄)
     if m:
-        본문 = m.group(1).replace("가구단일", "가구 단일 ")
-        줄들 = ["ㆍ[네이버페이/NH] {} ({})".format(본문, m.group(2).strip()),
-               "※ 신한P 네이버페이 등록 시 증정률 +1%",
-               "※ 일부 참여브랜드 9%",
-               "※ {}".format(공백정리(m.group(3)))]
-        추가("가구", 줄들, m.group(0))
-
-    return 항목들, 추출로그
+        넣기("가구", ["ㆍ[네이버페이/NH] {} ({})".format(sp(m.group(1)), sp(m.group(2))),
+                    "※ 신한P 네이버페이 등록 시 증정률 +1%", "※ 일부 참여브랜드 9%",
+                    "※ {}".format(sp(m.group(3)))])
+    return 항목, 로그
 
 
-# ------------------------------------------------------------------------------
-# 특정 날짜 행사(A*CLASS, 멤페, 공판 등) 후보 줄 찾기 (검토용)
-#   - 이 부분은 PDF 디자인상 글자가 날짜 칸에 겹쳐 들어가 깨져 나올 수 있어,
-#     자동으로 칸에 넣지 않고 "검토용 파일"에만 정리해 드립니다.
-# ------------------------------------------------------------------------------
-
-def 날짜행사_후보(글자):
-    """날짜 구간(예: 10/16~18)이나 혜택률(%)이 들어 있는 줄을 골라 돌려줍니다."""
+def PDF_날짜행사후보(글자):
+    """PDF에서 날짜 구간이 있는 줄을 그대로 뽑습니다(검토용)."""
     후보 = []
-    날짜패턴 = re.compile(r"\d{1,2}/\d{1,2}\s*~\s*\d{1,2}(?:/\d{1,2})?")
+    pat = re.compile(r"\d{1,2}/\d{1,2}\s*~\s*\d{1,2}(?:/\d{1,2})?")
     for line in 글자.split("\n"):
-        line = line.rstrip()
-        if not line.strip():
-            continue
-        날짜들 = 날짜패턴.findall(line)
-        if 날짜들:
-            후보.append((line.strip(), 날짜들))
+        line = line.strip()
+        if line and pat.findall(line):
+            후보.append((line, pat.findall(line)))
     return 후보
 
 
-# ------------------------------------------------------------------------------
-# 엑셀 쓰기
-# ------------------------------------------------------------------------------
+# ==============================================================================
+# 연/월 찾기, 엑셀 쓰기, 파일 찾기
+# ==============================================================================
 
-def 주차기간_읽기(ws):
-    """엑셀 양식에서 각 주차의 '기간' 글자를 읽어옵니다(검토용/표시용)."""
-    기간목록 = []
-    for cell in PERIOD_CELLS:
-        try:
-            v = ws[cell].value
-        except Exception:
-            v = None
-        기간목록.append(공백정리(str(v)) if v else "")
-    return 기간목록
+def 연월_찾기(글자):
+    m = re.search(r"(\d{2})\s*년\s*(\d{1,2})\s*월", 글자)
+    return (int(m.group(1)), int(m.group(2))) if m else (None, None)
 
 
 def 엑셀에_쓰기(양식_경로, 결과_경로, 셀내용):
-    """
-    양식 엑셀을 열어 노란색 칸에 내용을 채우고, 새 파일로 저장합니다.
-    - 셀내용: {"H9": "...", "H14": "...", ...} 형태
-    - 서식(줄바꿈 자동, 노란색 등)은 원래 양식의 것을 그대로 유지합니다.
-    """
     import openpyxl
     from openpyxl.styles import Alignment
-
     wb = openpyxl.load_workbook(양식_경로)
-    if SHEET_NAME in wb.sheetnames:
-        ws = wb[SHEET_NAME]
-    else:
-        ws = wb.active
-        print("[안내] '{}' 시트를 못 찾아 첫 번째 시트에 씁니다.".format(SHEET_NAME))
-
+    ws = wb[SHEET_NAME] if SHEET_NAME in wb.sheetnames else wb.active
     for 셀, 내용 in 셀내용.items():
         칸 = ws[셀]
         칸.value = 내용
-        # 줄바꿈이 보이도록 '자동 줄바꿈'을 켜고, 위-왼쪽 정렬로 맞춥니다.
         기존 = 칸.alignment
-        칸.alignment = Alignment(
-            wrap_text=True,
-            vertical=(기존.vertical or "top"),
-            horizontal=(기존.horizontal or "left"),
-        )
-
+        칸.alignment = Alignment(wrap_text=True,
+                                 vertical=(기존.vertical or "top"),
+                                 horizontal=(기존.horizontal or "left"))
     wb.save(결과_경로)
 
 
-# ------------------------------------------------------------------------------
-# 파일 자동 찾기
-# ------------------------------------------------------------------------------
-
 def 파일_자동찾기(폴더):
-    """폴더 안에서 엑셀 양식 1개와 PDF 1개를 자동으로 찾습니다."""
-    pdf목록 = sorted(glob.glob(os.path.join(폴더, "*.pdf")),
-                    key=os.path.getmtime, reverse=True)
-    xlsx목록 = [f for f in glob.glob(os.path.join(폴더, "*.xlsx"))
-               if "결과" not in os.path.basename(f)
-               and not os.path.basename(f).startswith("~$")]
-    xlsx목록 = sorted(xlsx목록, key=os.path.getmtime, reverse=True)
-    pdf = pdf목록[0] if pdf목록 else None
-    xlsx = xlsx목록[0] if xlsx목록 else None
-    return xlsx, pdf
+    def 최신(패턴):
+        L = [f for f in glob.glob(os.path.join(폴더, 패턴))
+             if not os.path.basename(f).startswith("~$")]
+        return sorted(L, key=os.path.getmtime, reverse=True)
+    pptx = 최신("*.pptx")
+    pdf = 최신("*.pdf")
+    xlsx = [f for f in 최신("*.xlsx") if "결과" not in os.path.basename(f)]
+    return (xlsx[0] if xlsx else None,
+            pptx[0] if pptx else None,
+            pdf[0] if pdf else None)
 
 
-# ------------------------------------------------------------------------------
-# 메인 (프로그램 시작점)
-# ------------------------------------------------------------------------------
+# ==============================================================================
+# 메인
+# ==============================================================================
 
 def main():
     print("=" * 60)
     print(" AK PLAZA 카드 사은혜택 자동 입력 프로그램")
     print("=" * 60)
 
-    필수라이브러리_확인()
-
-    # 이 프로그램 파일이 있는 폴더
     기준폴더 = os.path.dirname(os.path.abspath(__file__))
 
-    # 1) 파일 위치 정하기 (직접 지정 > 자동 찾기)
-    양식_경로 = None
-    pdf_경로 = None
-    인자 = sys.argv[1:]
-    for a in 인자:
+    # 1) 파일 정하기 (직접 지정 > 자동 찾기)
+    양식_경로 = 입력_경로 = None
+    입력종류 = None
+    for a in sys.argv[1:]:
         low = a.lower()
         if low.endswith(".xlsx"):
             양식_경로 = a
+        elif low.endswith(".pptx"):
+            입력_경로, 입력종류 = a, "ppt"
         elif low.endswith(".pdf"):
-            pdf_경로 = a
-    if not 양식_경로 or not pdf_경로:
-        자동_xlsx, 자동_pdf = 파일_자동찾기(기준폴더)
-        양식_경로 = 양식_경로 or 자동_xlsx
-        pdf_경로 = pdf_경로 or 자동_pdf
+            입력_경로, 입력종류 = a, "pdf"
+
+    자동_xlsx, 자동_pptx, 자동_pdf = 파일_자동찾기(기준폴더)
+    if not 양식_경로:
+        양식_경로 = 자동_xlsx
+    if not 입력_경로:
+        if 자동_pptx:
+            입력_경로, 입력종류 = 자동_pptx, "ppt"   # PPT 우선
+        elif 자동_pdf:
+            입력_경로, 입력종류 = 자동_pdf, "pdf"
 
     if not 양식_경로 or not os.path.exists(양식_경로):
         print("\n[오류] 엑셀 양식 파일(.xlsx)을 찾지 못했습니다.")
         print("       이 프로그램과 같은 폴더에 엑셀 양식 파일을 넣어 주세요.")
         sys.exit(1)
-    if not pdf_경로 or not os.path.exists(pdf_경로):
-        print("\n[오류] PDF 파일(.pdf)을 찾지 못했습니다.")
-        print("       이 프로그램과 같은 폴더에 이번 달 PDF 파일을 넣어 주세요.")
+    if not 입력_경로 or not os.path.exists(입력_경로):
+        print("\n[오류] PPT(.pptx) 또는 PDF(.pdf) 파일을 찾지 못했습니다.")
+        print("       이 프로그램과 같은 폴더에 이번 달 PPT(권장) 또는 PDF를 넣어 주세요.")
         sys.exit(1)
 
     print("\n[사용할 파일]")
     print("  · 엑셀 양식 :", os.path.basename(양식_경로))
-    print("  · PDF 파일  :", os.path.basename(pdf_경로))
+    print("  · 입력 파일 :", os.path.basename(입력_경로), "({})".format(입력종류.upper()))
 
-    # 2) PDF 읽기
-    글자 = PDF에서_글자읽기(pdf_경로)
-    연, 월 = 연월_찾기(글자)
+    # 2) 라이브러리 확인
+    필요 = ["openpyxl"] + (["pptx"] if 입력종류 == "ppt" else ["pdfplumber"])
+    없음 = []
+    for lib in 필요:
+        try:
+            __import__(lib)
+        except Exception:
+            없음.append("python-pptx" if lib == "pptx" else lib)
+    if 없음:
+        print("\n[오류] 다음 부품이 설치되어 있지 않습니다:", ", ".join(없음))
+        print("       먼저 '최초설치.bat' 을 한 번 실행해 주세요.")
+        sys.exit(1)
+
+    # 3) 연/월 + 주차 범위
+    import openpyxl
+    wb0 = openpyxl.load_workbook(양식_경로, data_only=True)
+    ws0 = wb0[SHEET_NAME] if SHEET_NAME in wb0.sheetnames else wb0.active
+
+    # 4) 입력 파일에서 혜택 추출
+    if 입력종류 == "ppt":
+        도형들 = PPT_도형텍스트(입력_경로)
+        전체글자 = "\n".join(도형들)
+        연, 월 = 연월_찾기(전체글자)
+        주차구간 = 주차범위_읽기(ws0, 월)
+        월간항목, 월간로그 = PPT_월간혜택(도형들)
+        주차행사, 행사로그 = PPT_날짜행사(도형들, 주차구간)
+        날짜후보 = None
+    else:
+        전체글자 = PDF_글자(입력_경로)
+        연, 월 = 연월_찾기(전체글자)
+        주차구간 = 주차범위_읽기(ws0, 월)
+        월간항목, 월간로그 = PDF_월간혜택(전체글자)
+        주차행사 = [[] for _ in YELLOW_CELLS]        # PDF는 날짜행사 자동배치 안 함
+        행사로그 = []
+        날짜후보 = PDF_날짜행사후보(전체글자)
+
     월표시 = "{}월".format(월) if 월 else "이번달"
     연표시 = "20{}년".format(연) if 연 else ""
     print("\n[문서 인식]", 연표시, 월표시)
 
-    # 3) 월간 공통 혜택 추출
-    항목들, 추출로그 = 월간혜택_추출(글자, 월)
-    if not 항목들:
-        print("\n[주의] PDF에서 월간 공통 혜택을 하나도 찾지 못했습니다.")
-        print("       PDF 양식이 평소와 다를 수 있습니다. 검토용 파일을 확인해 주세요.")
-    else:
-        print("\n[찾은 월간 공통 혜택] 총 {}건".format(len(추출로그)))
-        for 제목, _ in 추출로그:
-            print("   - ", 제목)
+    print("\n[월간 공통 혜택] 총 {}건".format(len(월간로그)))
+    for 제목 in 월간로그:
+        print("   - ", 제목)
+    if 입력종류 == "ppt":
+        총행사 = sum(len(x) for x in 주차행사)
+        print("[특정 날짜 행사] 총 {}건 (주차별 배치)".format(len(행사로그)))
+        for i, lst in enumerate(주차행사):
+            if lst:
+                print("   · {}주차: {}건".format(i + 1, len(lst)))
 
-    # 4) 주차 칸에 넣을 내용 만들기
-    #    - 월간 공통 혜택은 '모든 주차'에 유효하므로 5칸 모두에 넣습니다.
-    셀본문 = "\n\n".join(항목들) if 항목들 else ""
-    셀내용 = {cell: 셀본문 for cell in YELLOW_CELLS}
+    # 5) 주차 칸 내용 만들기 (월간 공통 + 그 주 행사)
+    셀내용 = {}
+    for i, cell in enumerate(YELLOW_CELLS):
+        조각 = list(월간항목)
+        if i < len(주차행사) and 주차행사[i]:
+            조각.append("─ [이 주 특별 행사] ─")
+            조각.extend(주차행사[i])
+        셀내용[cell] = "\n\n".join(조각)
 
-    # 5) 엑셀 저장 (새 파일)
+    # 6) 엑셀 저장 (새 파일)
     양식이름 = os.path.splitext(os.path.basename(양식_경로))[0]
-    꼬리 = "{}{}".format(연표시.replace("년", "년"), 월표시) if 연 else 월표시
-    결과이름 = "{}_{}_결과.xlsx".format(양식이름, 꼬리.replace(" ", ""))
+    꼬리 = "{}{}".format(연표시, 월표시).replace(" ", "") if 연 else 월표시
+    결과이름 = "{}_{}_결과.xlsx".format(양식이름, 꼬리)
     결과_경로 = os.path.join(기준폴더, 결과이름)
     엑셀에_쓰기(양식_경로, 결과_경로, 셀내용)
     print("\n[완료] 새 엑셀 파일을 만들었습니다:")
     print("   ->", 결과이름)
 
-    # 6) 검토용 텍스트 파일 만들기
-    검토이름 = "{}_{}_검토용.txt".format(양식이름, 꼬리.replace(" ", ""))
+    # 7) 검토용 텍스트 파일
+    검토이름 = "{}_{}_검토용.txt".format(양식이름, 꼬리)
     검토_경로 = os.path.join(기준폴더, 검토이름)
-    주차기간 = None
-    try:
-        import openpyxl
-        wb = openpyxl.load_workbook(양식_경로, data_only=True)
-        ws = wb[SHEET_NAME] if SHEET_NAME in wb.sheetnames else wb.active
-        주차기간 = 주차기간_읽기(ws)
-    except Exception:
-        주차기간 = ["" for _ in YELLOW_CELLS]
+    주차기간표시 = []
+    for cell in PERIOD_CELLS:
+        try:
+            주차기간표시.append(sp(str(ws0[cell].value or "")))
+        except Exception:
+            주차기간표시.append("")
 
-    날짜후보 = 날짜행사_후보(글자)
     with open(검토_경로, "w", encoding="utf-8") as f:
         f.write("=" * 70 + "\n")
         f.write(" {} {} 카드 사은혜택 - 검토용 정리\n".format(연표시, 월표시))
         f.write("=" * 70 + "\n\n")
-        f.write("이 파일은 '사람이 눈으로 확인'하기 위한 참고용입니다.\n")
-        f.write("아래 [월간 공통 혜택]은 엑셀 결과 파일의 모든 주차 칸에 이미 들어갔습니다.\n\n")
-
-        f.write("-" * 70 + "\n")
-        f.write("[1] 엑셀 노란색 칸에 들어간 내용 (월간 공통 혜택)\n")
-        f.write("-" * 70 + "\n")
+        f.write("아래 내용이 엑셀 결과 파일의 각 주차 노란색 칸에 들어갔습니다.\n")
+        f.write("원본과 비교해 확인해 주세요.\n\n")
         for i, cell in enumerate(YELLOW_CELLS):
-            기간표시 = ("  ({})".format(주차기간[i]) if 주차기간 and 주차기간[i] else "")
-            f.write("\n■ {}주차{}  [엑셀 {}]\n".format(i + 1, 기간표시, cell))
-            f.write((셀본문 if 셀본문 else "(내용 없음)") + "\n")
+            기간 = ("  ({})".format(주차기간표시[i]) if i < len(주차기간표시) and 주차기간표시[i] else "")
+            f.write("\n" + "─" * 70 + "\n")
+            f.write("■ {}주차{}  [엑셀 {}]\n".format(i + 1, 기간, cell))
+            f.write("─" * 70 + "\n")
+            f.write((셀내용[cell] if 셀내용[cell] else "(내용 없음)") + "\n")
 
-        f.write("\n\n")
-        f.write("-" * 70 + "\n")
-        f.write("[2] 특정 날짜 행사 후보 (사람이 확인 후 필요하면 직접 추가하세요)\n")
-        f.write("-" * 70 + "\n")
-        f.write("※ 아래는 PDF에서 날짜 구간(예: 10/16~18)이 있는 줄을 그대로 뽑은 것입니다.\n")
-        f.write("※ PDF 디자인상 글자가 섞여 나올 수 있으니, 원본 PDF와 비교해 확인하세요.\n\n")
-        if 날짜후보:
+        if 입력종류 == "pdf" and 날짜후보:
+            f.write("\n\n" + "=" * 70 + "\n")
+            f.write("[참고] PDF에서 발견한 '날짜가 있는 줄'(특정 날짜 행사 후보)\n")
+            f.write("       PDF는 글자가 섞여 나올 수 있으니 원본과 비교 후 직접 추가하세요.\n")
+            f.write("       (PPT 파일로 넣으면 이 행사들도 자동으로 주차에 배치됩니다.)\n")
+            f.write("=" * 70 + "\n")
             for 줄, 날짜들 in 날짜후보:
                 f.write("· (날짜: {})\n   {}\n\n".format(", ".join(날짜들), 줄))
-        else:
-            f.write("(특정 날짜 행사 후보를 찾지 못했습니다.)\n")
 
     print("[완료] 검토용 파일도 만들었습니다:")
     print("   ->", 검토이름)
 
     print("\n" + "=" * 60)
     print(" 끝났습니다! 결과 엑셀 파일을 열어 확인해 주세요.")
-    print(" (특정 날짜 행사는 검토용 파일을 보고 필요하면 직접 추가하세요.)")
     print("=" * 60)
 
 
 if __name__ == "__main__":
-    # 오류가 나더라도 무슨 일인지 화면에 보여 줍니다.
-    # (창을 열어두고 멈추는 일은 '실행하기.bat'이 담당합니다.)
     try:
         main()
     except SystemExit:
