@@ -92,6 +92,39 @@ def 카드사_정리(s):
                  .replace("발급 ①", "발급①").replace("발급 ②", "발급②"))
 
 
+def 점포정리(s):
+    """'4개점' 같은 표현을 실제 점포 표기 '수/분/평/원'으로 바꿉니다. ('분' 등 단일점포는 유지)"""
+    return re.sub(r"\d+\s*개점", "수/분/평/원", str(s))
+
+
+def 예_아니오(질문, 기본=True):
+    """사용자에게 예/아니오를 물어봅니다. 그냥 Enter를 누르면 '기본'값을 씁니다.
+    (자동 실행 등으로 입력을 받을 수 없으면 기본값을 사용합니다.)"""
+    표시 = "Y/n" if 기본 else "y/N"
+    try:
+        답 = input("{} ({}): ".format(질문, 표시)).strip().lower()
+    except Exception:
+        return 기본
+    if 답 == "":
+        return 기본
+    if 답 in ("y", "yes", "네", "예", "o", "ㅛ"):
+        return True
+    if 답 in ("n", "no", "아니오", "아니요", "x", "ㅜ"):
+        return False
+    return 기본
+
+
+def 기본율_노트(t1):
+    """가전/가구 글상자에서 '기본 9%'와 '등록 신한P 10%'를 찾아 ※ 문구를 만듭니다."""
+    기본 = re.search(r"기본\s*(\d+)\s*%", t1)
+    등록 = re.search(r"등록\s*신한\s*P?\s*(\d+)\s*%", t1)
+    if 기본 and 등록:
+        return "※ 기본 {}%, 신한P 네이버페이 등록 시 {}%".format(기본.group(1), 등록.group(1))
+    if 기본:
+        return "※ 기본 {}%, 신한P 네이버페이 등록 시 증정률 +1%".format(기본.group(1))
+    return "※ 신한P 네이버페이 등록 시 증정률 +1%"
+
+
 # ==============================================================================
 # 주차 범위 읽기 (엑셀의 '기간' 칸에서)
 # ==============================================================================
@@ -156,13 +189,14 @@ def PPT_도형텍스트(pptx_경로):
 
 
 def PPT_월간혜택(도형들):
-    """PPT에서 '한 달 내내 유효한' 공통 혜택을 뽑습니다. (순서, 문장덩어리) 목록."""
-    항목 = []      # (정렬순서, 덩어리)
-    로그 = []      # (제목,)
+    """
+    PPT에서 '한 달 내내 유효한' 공통 혜택을 뽑습니다.
+    돌려주는 값: [(제목, 문장덩어리), ...]  (제목으로 발급/정기 포함여부를 걸러낼 수 있음)
+    """
+    항목 = []      # (정렬순서, 제목, 덩어리)
 
     def 넣기(순서, 제목, 줄들):
-        항목.append((순서, "\n".join(줄들)))
-        로그.append(제목)
+        항목.append((순서, 제목, "\n".join(줄들)))
 
     for t in 도형들:
         L0 = sp(t.split("\n")[0])
@@ -213,22 +247,22 @@ def PPT_월간혜택(도형들):
         elif "가전단일" in c:
             m = re.match(r"\[([^\]]+)\]\s*(가전.+?)\s*\[([^\]]+)\].*?\(([^)]*\d/\d[^)]*)\)", L0)
             if m:
-                넣기(7, "가전",
-                    ["ㆍ[{}] {} ({})".format(sp(m.group(1)), sp(m.group(2)), sp(m.group(3))),
-                     "※ 신한P 네이버페이 등록 시 증정률 +1%",
-                     "※ {}".format(기간정리(m.group(4)))])
+                줄들 = ["ㆍ[{}] {} ({})".format(sp(m.group(1)), sp(m.group(2)), sp(m.group(3))),
+                       기본율_노트(t1),
+                       "※ {}".format(기간정리(m.group(4)))]
+                넣기(7, "가전", [x for x in 줄들 if x])
 
         elif "가구단일" in c:
             m = re.match(r"\[([^\]]+)\]\s*(가구.+?)\s*\[([^\]]+)\].*?\(([^)]*\d/\d[^)]*)\)", L0)
             if m:
-                넣기(8, "가구",
-                    ["ㆍ[{}] {} ({})".format(sp(m.group(1)), sp(m.group(2)), sp(m.group(3))),
-                     "※ 신한P 네이버페이 등록 시 증정률 +1%",
-                     "※ 일부 참여브랜드 9%",
-                     "※ {}".format(기간정리(m.group(4)))])
+                줄들 = ["ㆍ[{}] {} ({})".format(sp(m.group(1)), sp(m.group(2)), sp(m.group(3))),
+                       기본율_노트(t1),
+                       "※ 일부 참여브랜드 9%",
+                       "※ {}".format(기간정리(m.group(4)))]
+                넣기(8, "가구", [x for x in 줄들 if x])
 
     항목.sort(key=lambda x: x[0])
-    return [c for _, c in 항목], 로그
+    return [(제목, c) for _, 제목, c in 항목]
 
 
 def PPT_날짜행사(도형들, 주차구간):
@@ -256,7 +290,7 @@ def PPT_날짜행사(도형들, 주차구간):
         for pm in parens:
             seg = t1[cur:pm.start()]
             cur = pm.end()
-            날짜점포 = sp(pm.group(1))
+            날짜점포 = 점포정리(sp(pm.group(1)))   # '4개점' → '수/분/평/원'
 
             대상들 = re.findall(
                 r"([가-힣A-Za-z*]+(?:\s[가-힣A-Za-z*]+)*\s*(?:합산|단일)\s*[\d/,~]+\s*만?)", seg)
@@ -316,12 +350,15 @@ def PDF_글자(pdf_경로):
 
 
 def PDF_월간혜택(글자):
-    """PDF에서 월간 공통 혜택만 추출합니다(줄 겹침 때문에 날짜 행사는 검토용으로만)."""
+    """
+    PDF에서 월간 공통 혜택만 추출합니다(줄 겹침 때문에 날짜 행사는 검토용으로만).
+    돌려주는 값: [(제목, 문장덩어리), ...]
+    """
     한줄 = sp(글자.replace("\n", " "))
-    항목, 로그 = [], []
+    항목 = []
 
     def 넣기(제목, 줄들):
-        항목.append("\n".join(줄들)); 로그.append(제목)
+        항목.append((제목, "\n".join(줄들)))
 
     m = re.search(r"\[신한Plus 발급①\][^\[]*?(전관\s*합산\s*[\d/]+만)\s*\[([^\]]+)\]\s*\(([^)]*)\)", 한줄)
     if m:
@@ -359,13 +396,12 @@ def PDF_월간혜택(글자):
     m = re.search(r"\[네이버페이/NH\]\s*(가전단일[\d/,]+만)\s*\[([^\]]+)\].*?\(([^)]*\d{1,2}/\d{1,2}~[^)]*)\)", 한줄)
     if m:
         넣기("가전", ["ㆍ[네이버페이/NH] {} ({})".format(sp(m.group(1)), sp(m.group(2))),
-                    "※ 신한P 네이버페이 등록 시 증정률 +1%", "※ {}".format(sp(m.group(3)))])
+                    기본율_노트(한줄), "※ {}".format(sp(m.group(3)))])
     m = re.search(r"\[네이버페이/NH\]\s*(가구단일[\d/,]+만)\s*\[([^\]]+)\].*?\(([^)]*\d{1,2}/\d{1,2}~[^)]*)\)", 한줄)
     if m:
         넣기("가구", ["ㆍ[네이버페이/NH] {} ({})".format(sp(m.group(1)), sp(m.group(2))),
-                    "※ 신한P 네이버페이 등록 시 증정률 +1%", "※ 일부 참여브랜드 9%",
-                    "※ {}".format(sp(m.group(3)))])
-    return 항목, 로그
+                    기본율_노트(한줄), "※ 일부 참여브랜드 9%", "※ {}".format(sp(m.group(3)))])
+    return 항목
 
 
 def PDF_날짜행사후보(글자):
@@ -474,6 +510,18 @@ def main():
         print("       먼저 '최초설치.bat' 을 한 번 실행해 주세요.")
         sys.exit(1)
 
+    # 2-2) 포함 여부 선택 (명령행 옵션 우선, 없으면 물어봅니다)
+    args_low = [a.lower() for a in sys.argv[1:]]
+    발급포함 = False if ("--no-발급" in args_low or "--no-issue" in args_low) else \
+             (True if ("--발급" in args_low or "--issue" in args_low) else None)
+    정기포함 = False if ("--no-정기" in args_low or "--no-regular" in args_low) else \
+             (True if ("--정기" in args_low or "--regular" in args_low) else None)
+    print("\n[선택] 아래 항목을 엑셀에 포함할까요?  (그냥 Enter=포함, n 입력=제외)")
+    if 발급포함 is None:
+        발급포함 = 예_아니오("  · 신한Plus 발급①/발급② 혜택 포함?", True)
+    if 정기포함 is None:
+        정기포함 = 예_아니오("  · 신한Plus 정기 혜택 포함?", True)
+
     # 3) 연/월 + 주차 범위
     import openpyxl
     wb0 = openpyxl.load_workbook(양식_경로, data_only=True)
@@ -485,27 +533,39 @@ def main():
         전체글자 = "\n".join(도형들)
         연, 월 = 연월_찾기(전체글자)
         주차구간 = 주차범위_읽기(ws0, 월)
-        월간항목, 월간로그 = PPT_월간혜택(도형들)
+        월간항목 = PPT_월간혜택(도형들)             # [(제목, 내용), ...]
         주차행사, 행사로그 = PPT_날짜행사(도형들, 주차구간)
         날짜후보 = None
     else:
         전체글자 = PDF_글자(입력_경로)
         연, 월 = 연월_찾기(전체글자)
         주차구간 = 주차범위_읽기(ws0, 월)
-        월간항목, 월간로그 = PDF_월간혜택(전체글자)
+        월간항목 = PDF_월간혜택(전체글자)            # [(제목, 내용), ...]
         주차행사 = [[] for _ in YELLOW_CELLS]        # PDF는 날짜행사 자동배치 안 함
         행사로그 = []
         날짜후보 = PDF_날짜행사후보(전체글자)
+
+    # 4-2) 발급/정기 포함 여부 반영 (실행 시 사용자가 선택한 값)
+    def _포함(제목):
+        if not 발급포함 and "발급" in 제목:
+            return False
+        if not 정기포함 and "정기" in 제목:
+            return False
+        return True
+    월간항목 = [(t, c) for (t, c) in 월간항목 if _포함(t)]
 
     월표시 = "{}월".format(월) if 월 else "이번달"
     연표시 = "20{}년".format(연) if 연 else ""
     print("\n[문서 인식]", 연표시, 월표시)
 
-    print("\n[월간 공통 혜택] 총 {}건".format(len(월간로그)))
-    for 제목 in 월간로그:
+    print("\n[월간 공통 혜택] 총 {}건".format(len(월간항목)))
+    for 제목, _ in 월간항목:
         print("   - ", 제목)
+    if not 발급포함:
+        print("   (신한Plus 발급 혜택은 사용자 선택으로 제외)")
+    if not 정기포함:
+        print("   (신한Plus 정기 혜택은 사용자 선택으로 제외)")
     if 입력종류 == "ppt":
-        총행사 = sum(len(x) for x in 주차행사)
         print("[특정 날짜 행사] 총 {}건 (주차별 배치)".format(len(행사로그)))
         for i, lst in enumerate(주차행사):
             if lst:
@@ -514,7 +574,7 @@ def main():
     # 5) 주차 칸 내용 만들기 (월간 공통 + 그 주 행사)
     셀내용 = {}
     for i, cell in enumerate(YELLOW_CELLS):
-        조각 = list(월간항목)
+        조각 = [c for _, c in 월간항목]
         if i < len(주차행사) and 주차행사[i]:
             조각.append("─ [이 주 특별 행사] ─")
             조각.extend(주차행사[i])
