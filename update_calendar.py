@@ -456,6 +456,140 @@ def 파일_자동찾기(폴더):
 # 메인
 # ==============================================================================
 
+def 입력종류_판단(경로):
+    """파일 확장자로 'ppt' / 'pdf' / None 을 돌려줍니다."""
+    low = (경로 or "").lower()
+    if low.endswith(".pptx"):
+        return "ppt"
+    if low.endswith(".pdf"):
+        return "pdf"
+    return None
+
+
+def 라이브러리_확인(입력종류):
+    """필요한 부품이 설치돼 있는지 확인하고, 없는 것의 이름 목록을 돌려줍니다."""
+    필요 = ["openpyxl"] + (["pptx"] if 입력종류 == "ppt" else ["pdfplumber"])
+    없음 = []
+    for lib in 필요:
+        try:
+            __import__(lib)
+        except Exception:
+            없음.append("python-pptx" if lib == "pptx" else lib)
+    return 없음
+
+
+def 혜택_처리(양식_경로, 입력_경로, 입력종류, 발급포함, 정기포함, 기준폴더=None, 로그=print):
+    """
+    핵심 처리: 입력 파일에서 혜택을 뽑아 엑셀 노란색 칸을 채우고,
+    결과 엑셀 + 검토용 txt 를 만들어 저장합니다.
+    돌려주는 값(dict): 결과경로, 검토경로, 연, 월, 월간제목들, 주차행사건수
+    (CLI와 GUI가 함께 사용합니다. 로그()로 진행 상황을 알려줍니다.)
+    """
+    import openpyxl
+    if not 기준폴더:
+        기준폴더 = os.path.dirname(os.path.abspath(입력_경로))
+
+    로그("[사용할 파일]")
+    로그("  · 엑셀 양식 : " + os.path.basename(양식_경로))
+    로그("  · 입력 파일 : {} ({})".format(os.path.basename(입력_경로), 입력종류.upper()))
+
+    wb0 = openpyxl.load_workbook(양식_경로, data_only=True)
+    ws0 = wb0[SHEET_NAME] if SHEET_NAME in wb0.sheetnames else wb0.active
+
+    # 입력 파일에서 혜택 추출
+    if 입력종류 == "ppt":
+        도형들 = PPT_도형텍스트(입력_경로)
+        전체글자 = "\n".join(도형들)
+        연, 월 = 연월_찾기(전체글자)
+        주차구간 = 주차범위_읽기(ws0, 월)
+        월간항목 = PPT_월간혜택(도형들)
+        주차행사, 행사로그 = PPT_날짜행사(도형들, 주차구간)
+        날짜후보 = None
+    else:
+        전체글자 = PDF_글자(입력_경로)
+        연, 월 = 연월_찾기(전체글자)
+        주차구간 = 주차범위_읽기(ws0, 월)
+        월간항목 = PDF_월간혜택(전체글자)
+        주차행사 = [[] for _ in YELLOW_CELLS]
+        행사로그 = []
+        날짜후보 = PDF_날짜행사후보(전체글자)
+
+    # 발급/정기 포함 여부 반영
+    def _포함(제목):
+        if not 발급포함 and "발급" in 제목:
+            return False
+        if not 정기포함 and "정기" in 제목:
+            return False
+        return True
+    월간항목 = [(t, c) for (t, c) in 월간항목 if _포함(t)]
+
+    월표시 = "{}월".format(월) if 월 else "이번달"
+    연표시 = "20{}년".format(연) if 연 else ""
+    로그("\n[문서 인식] {} {}".format(연표시, 월표시))
+    로그("[월간 공통 혜택] 총 {}건".format(len(월간항목)))
+    for 제목, _ in 월간항목:
+        로그("   - " + 제목)
+    if not 발급포함:
+        로그("   (신한Plus 발급 혜택은 제외)")
+    if not 정기포함:
+        로그("   (신한Plus 정기 혜택은 제외)")
+    if 입력종류 == "ppt":
+        로그("[특정 날짜 행사] 총 {}건 (주차별 배치)".format(len(행사로그)))
+
+    # 주차 칸 내용 만들기
+    셀내용 = {}
+    for i, cell in enumerate(YELLOW_CELLS):
+        조각 = [c for _, c in 월간항목]
+        if i < len(주차행사) and 주차행사[i]:
+            조각.append("─ [이 주 특별 행사] ─")
+            조각.extend(주차행사[i])
+        셀내용[cell] = "\n\n".join(조각)
+
+    # 엑셀 저장 (새 파일)
+    양식이름 = os.path.splitext(os.path.basename(양식_경로))[0]
+    꼬리 = "{}{}".format(연표시, 월표시).replace(" ", "") if 연 else 월표시
+    결과_경로 = os.path.join(기준폴더, "{}_{}_결과.xlsx".format(양식이름, 꼬리))
+    엑셀에_쓰기(양식_경로, 결과_경로, 셀내용)
+    로그("\n[완료] 새 엑셀 파일: " + os.path.basename(결과_경로))
+
+    # 검토용 텍스트 파일
+    검토_경로 = os.path.join(기준폴더, "{}_{}_검토용.txt".format(양식이름, 꼬리))
+    주차기간표시 = []
+    for cell in PERIOD_CELLS:
+        try:
+            주차기간표시.append(sp(str(ws0[cell].value or "")))
+        except Exception:
+            주차기간표시.append("")
+    with open(검토_경로, "w", encoding="utf-8") as f:
+        f.write("=" * 70 + "\n")
+        f.write(" {} {} 카드 사은혜택 - 검토용 정리\n".format(연표시, 월표시))
+        f.write("=" * 70 + "\n\n")
+        f.write("아래 내용이 엑셀 결과 파일의 각 주차 노란색 칸에 들어갔습니다.\n")
+        f.write("원본과 비교해 확인해 주세요.\n\n")
+        for i, cell in enumerate(YELLOW_CELLS):
+            기간 = ("  ({})".format(주차기간표시[i]) if i < len(주차기간표시) and 주차기간표시[i] else "")
+            f.write("\n" + "─" * 70 + "\n")
+            f.write("■ {}주차{}  [엑셀 {}]\n".format(i + 1, 기간, cell))
+            f.write("─" * 70 + "\n")
+            f.write((셀내용[cell] if 셀내용[cell] else "(내용 없음)") + "\n")
+        if 입력종류 == "pdf" and 날짜후보:
+            f.write("\n\n" + "=" * 70 + "\n")
+            f.write("[참고] PDF에서 발견한 '날짜가 있는 줄'(특정 날짜 행사 후보)\n")
+            f.write("       PPT 파일로 넣으면 이 행사들도 자동으로 주차에 배치됩니다.\n")
+            f.write("=" * 70 + "\n")
+            for 줄, 날짜들 in 날짜후보:
+                f.write("· (날짜: {})\n   {}\n\n".format(", ".join(날짜들), 줄))
+    로그("[완료] 검토용 파일: " + os.path.basename(검토_경로))
+
+    return {
+        "결과경로": 결과_경로,
+        "검토경로": 검토_경로,
+        "연": 연, "월": 월,
+        "월간제목들": [t for t, _ in 월간항목],
+        "주차행사건수": [len(x) for x in 주차행사],
+    }
+
+
 def main():
     print("=" * 60)
     print(" AK PLAZA 카드 사은혜택 자동 입력 프로그램")
@@ -493,18 +627,8 @@ def main():
         print("       이 프로그램과 같은 폴더에 이번 달 PPT(권장) 또는 PDF를 넣어 주세요.")
         sys.exit(1)
 
-    print("\n[사용할 파일]")
-    print("  · 엑셀 양식 :", os.path.basename(양식_경로))
-    print("  · 입력 파일 :", os.path.basename(입력_경로), "({})".format(입력종류.upper()))
-
     # 2) 라이브러리 확인
-    필요 = ["openpyxl"] + (["pptx"] if 입력종류 == "ppt" else ["pdfplumber"])
-    없음 = []
-    for lib in 필요:
-        try:
-            __import__(lib)
-        except Exception:
-            없음.append("python-pptx" if lib == "pptx" else lib)
+    없음 = 라이브러리_확인(입력종류)
     if 없음:
         print("\n[오류] 다음 부품이 설치되어 있지 않습니다:", ", ".join(없음))
         print("       먼저 '최초설치.bat' 을 한 번 실행해 주세요.")
@@ -522,107 +646,8 @@ def main():
     if 정기포함 is None:
         정기포함 = 예_아니오("  · 신한Plus 정기 혜택 포함?", True)
 
-    # 3) 연/월 + 주차 범위
-    import openpyxl
-    wb0 = openpyxl.load_workbook(양식_경로, data_only=True)
-    ws0 = wb0[SHEET_NAME] if SHEET_NAME in wb0.sheetnames else wb0.active
-
-    # 4) 입력 파일에서 혜택 추출
-    if 입력종류 == "ppt":
-        도형들 = PPT_도형텍스트(입력_경로)
-        전체글자 = "\n".join(도형들)
-        연, 월 = 연월_찾기(전체글자)
-        주차구간 = 주차범위_읽기(ws0, 월)
-        월간항목 = PPT_월간혜택(도형들)             # [(제목, 내용), ...]
-        주차행사, 행사로그 = PPT_날짜행사(도형들, 주차구간)
-        날짜후보 = None
-    else:
-        전체글자 = PDF_글자(입력_경로)
-        연, 월 = 연월_찾기(전체글자)
-        주차구간 = 주차범위_읽기(ws0, 월)
-        월간항목 = PDF_월간혜택(전체글자)            # [(제목, 내용), ...]
-        주차행사 = [[] for _ in YELLOW_CELLS]        # PDF는 날짜행사 자동배치 안 함
-        행사로그 = []
-        날짜후보 = PDF_날짜행사후보(전체글자)
-
-    # 4-2) 발급/정기 포함 여부 반영 (실행 시 사용자가 선택한 값)
-    def _포함(제목):
-        if not 발급포함 and "발급" in 제목:
-            return False
-        if not 정기포함 and "정기" in 제목:
-            return False
-        return True
-    월간항목 = [(t, c) for (t, c) in 월간항목 if _포함(t)]
-
-    월표시 = "{}월".format(월) if 월 else "이번달"
-    연표시 = "20{}년".format(연) if 연 else ""
-    print("\n[문서 인식]", 연표시, 월표시)
-
-    print("\n[월간 공통 혜택] 총 {}건".format(len(월간항목)))
-    for 제목, _ in 월간항목:
-        print("   - ", 제목)
-    if not 발급포함:
-        print("   (신한Plus 발급 혜택은 사용자 선택으로 제외)")
-    if not 정기포함:
-        print("   (신한Plus 정기 혜택은 사용자 선택으로 제외)")
-    if 입력종류 == "ppt":
-        print("[특정 날짜 행사] 총 {}건 (주차별 배치)".format(len(행사로그)))
-        for i, lst in enumerate(주차행사):
-            if lst:
-                print("   · {}주차: {}건".format(i + 1, len(lst)))
-
-    # 5) 주차 칸 내용 만들기 (월간 공통 + 그 주 행사)
-    셀내용 = {}
-    for i, cell in enumerate(YELLOW_CELLS):
-        조각 = [c for _, c in 월간항목]
-        if i < len(주차행사) and 주차행사[i]:
-            조각.append("─ [이 주 특별 행사] ─")
-            조각.extend(주차행사[i])
-        셀내용[cell] = "\n\n".join(조각)
-
-    # 6) 엑셀 저장 (새 파일)
-    양식이름 = os.path.splitext(os.path.basename(양식_경로))[0]
-    꼬리 = "{}{}".format(연표시, 월표시).replace(" ", "") if 연 else 월표시
-    결과이름 = "{}_{}_결과.xlsx".format(양식이름, 꼬리)
-    결과_경로 = os.path.join(기준폴더, 결과이름)
-    엑셀에_쓰기(양식_경로, 결과_경로, 셀내용)
-    print("\n[완료] 새 엑셀 파일을 만들었습니다:")
-    print("   ->", 결과이름)
-
-    # 7) 검토용 텍스트 파일
-    검토이름 = "{}_{}_검토용.txt".format(양식이름, 꼬리)
-    검토_경로 = os.path.join(기준폴더, 검토이름)
-    주차기간표시 = []
-    for cell in PERIOD_CELLS:
-        try:
-            주차기간표시.append(sp(str(ws0[cell].value or "")))
-        except Exception:
-            주차기간표시.append("")
-
-    with open(검토_경로, "w", encoding="utf-8") as f:
-        f.write("=" * 70 + "\n")
-        f.write(" {} {} 카드 사은혜택 - 검토용 정리\n".format(연표시, 월표시))
-        f.write("=" * 70 + "\n\n")
-        f.write("아래 내용이 엑셀 결과 파일의 각 주차 노란색 칸에 들어갔습니다.\n")
-        f.write("원본과 비교해 확인해 주세요.\n\n")
-        for i, cell in enumerate(YELLOW_CELLS):
-            기간 = ("  ({})".format(주차기간표시[i]) if i < len(주차기간표시) and 주차기간표시[i] else "")
-            f.write("\n" + "─" * 70 + "\n")
-            f.write("■ {}주차{}  [엑셀 {}]\n".format(i + 1, 기간, cell))
-            f.write("─" * 70 + "\n")
-            f.write((셀내용[cell] if 셀내용[cell] else "(내용 없음)") + "\n")
-
-        if 입력종류 == "pdf" and 날짜후보:
-            f.write("\n\n" + "=" * 70 + "\n")
-            f.write("[참고] PDF에서 발견한 '날짜가 있는 줄'(특정 날짜 행사 후보)\n")
-            f.write("       PDF는 글자가 섞여 나올 수 있으니 원본과 비교 후 직접 추가하세요.\n")
-            f.write("       (PPT 파일로 넣으면 이 행사들도 자동으로 주차에 배치됩니다.)\n")
-            f.write("=" * 70 + "\n")
-            for 줄, 날짜들 in 날짜후보:
-                f.write("· (날짜: {})\n   {}\n\n".format(", ".join(날짜들), 줄))
-
-    print("[완료] 검토용 파일도 만들었습니다:")
-    print("   ->", 검토이름)
+    # 3) 처리 실행
+    혜택_처리(양식_경로, 입력_경로, 입력종류, 발급포함, 정기포함, 기준폴더, 로그=print)
 
     print("\n" + "=" * 60)
     print(" 끝났습니다! 결과 엑셀 파일을 열어 확인해 주세요.")
