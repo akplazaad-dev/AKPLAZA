@@ -46,6 +46,8 @@ except Exception:
 # [설정] 여기 값만 필요할 때 바꾸면 됩니다. (보통은 그대로 두세요)
 # ------------------------------------------------------------------------------
 
+프로그램_버전 = "2026.10.16"                         # 문제 확인 시 어떤 버전인지 알 수 있도록 표시
+
 SHEET_NAME = "사전고지(본부)"                      # 내용을 채울 시트(탭) 이름
 YELLOW_CELLS = ["H9", "H14", "H18", "H22", "H26"]  # 1~5주차 노란색 칸 위치
 PERIOD_CELLS = ["E6", "E11", "E15", "E19", "E23"]  # 1~5주차 '기간' 칸 위치
@@ -63,20 +65,33 @@ def sp(s):
     return re.sub(r"[ \t]+", " ", str(s)).strip()
 
 
-def md(m, d):
-    """월/일을 비교하기 쉬운 숫자로: 10월 5일 → 1005"""
+def md(m, d, 기준월=None):
+    """월/일을 비교하기 쉬운 숫자로: 10월 5일 → 1005.
+    해가 바뀌는 주차도 순서가 맞도록, 문서가 연말(10~12월)인데 1~3월 날짜면 다음 해로,
+    문서가 연초(1~3월)인데 10~12월 날짜면 전년도로 계산합니다. (예: 12월 문서의 1/2 → 1302)"""
+    if 기준월:
+        if 기준월 >= 10 and m <= 3:
+            m += 12
+        elif 기준월 <= 3 and m >= 10:
+            m -= 12
     return m * 100 + d
 
 
-def 날짜구간_파싱(txt):
-    """'10/2~5', '10/16~22', '10/30~11/1', '10/1~31' → (시작, 끝) 숫자. 없으면 None."""
+def 날짜구간_파싱(txt, 기준월=None):
+    """'10/2~5', '10/16~22', '10/30~11/1', '10/1~31' → (시작, 끝) 숫자. 없으면 None.
+    '10/30~2' 처럼 끝 날짜의 월이 생략됐는데 시작일보다 작으면 다음 달로 봅니다."""
     m = re.search(r"(\d{1,2})/(\d{1,2})\s*~\s*(?:(\d{1,2})/)?(\d{1,2})", txt)
     if not m:
         return None
     m1, d1 = int(m.group(1)), int(m.group(2))
-    m2 = int(m.group(3)) if m.group(3) else m1
     d2 = int(m.group(4))
-    return (md(m1, d1), md(m2, d2))
+    if m.group(3):
+        m2 = int(m.group(3))
+    else:
+        m2 = m1 + 1 if d2 < d1 else m1
+        if m2 == 13:
+            m2 = 1
+    return (md(m1, d1, 기준월), md(m2, d2, 기준월))
 
 
 def 기간정리(paren):
@@ -140,19 +155,29 @@ def 주차범위_읽기(ws, 월):
             v = str(ws[cell].value or "")
         except Exception:
             v = ""
-        m = re.search(r"(\d{1,2})/(\d{1,2})\s*~\s*(?:(\d{1,2})/)?(\d{1,2})", v)
-        if m:
-            m1, d1 = int(m.group(1)), int(m.group(2))
-            m2 = int(m.group(3)) if m.group(3) else m1
-            d2 = int(m.group(4))
-            구간.append((md(m1, d1), md(m2, d2)))
-        else:
-            구간.append(None)
+        구간.append(날짜구간_파싱(v, 월))
     # 하나라도 못 읽었으면, 못 읽은 칸만 넉넉한 기본값으로 채웁니다.
     for i, g in enumerate(구간):
         if g is None:
-            구간[i] = (md(월 or 1, 1), md((월 or 1) + 1, 5))
+            구간[i] = (md(월 or 1, 1, 월), md((월 or 1) % 12 + 1, 5, 월))
     return 구간
+
+
+def 양식월_확인(구간, 문서월):
+    """
+    엑셀 양식의 주차 기간이 문서(PPT/PDF)의 달을 포함하는지 확인합니다.
+    예) 11월 PPT인데 양식 기간이 10/1~10/29 뿐이면 → 지난달 양식을 쓴 것.
+    돌려주는 값: 경고 문장 (문제 없으면 "")
+    """
+    if not 문서월 or not 구간:
+        return ""
+    시작, 끝 = md(문서월, 1, 문서월), md(문서월, 31, 문서월)
+    겹침 = [g for g in 구간 if g and g[0] <= 끝 and g[1] >= 시작]
+    # 주차 대부분이 그 달에 걸쳐 있어야 정상입니다. (지난달 양식은 마지막 주만 살짝 겹침)
+    if len(겹침) * 2 > len(구간):
+        return ""
+    return ("엑셀 양식의 주차 기간(E칸)이 {}월과 맞지 않습니다. "
+            "지난달 양식을 넣으신 것 같습니다. {}월 양식을 넣어 주세요.").format(문서월, 문서월)
 
 
 def 주차찾기(rng, 주차구간):
@@ -167,9 +192,14 @@ def 주차찾기(rng, 주차구간):
 # PPT(.pptx) 읽기
 # ==============================================================================
 
-def PPT_도형텍스트(pptx_경로):
-    """PPT의 모든 글상자 텍스트를 목록으로 돌려줍니다(그룹 안까지)."""
+def PPT_도형목록(pptx_경로):
+    """
+    PPT의 모든 글상자(그룹 안까지)마다 글자와 위치(인치 단위)를 돌려줍니다.
+    표(예: 날짜 격자, 예산 CAP 표)는 사은혜택 내용이 아니므로 제외합니다.
+    돌려주는 값: [{"t": 글자, "l": 왼쪽, "top": 위, "w": 너비, "h": 높이}, ...]
+    """
     from pptx import Presentation
+    EMU = 914400.0
 
     def 안쪽텍스트(shape):
         if shape.shape_type == 6:  # GROUP
@@ -184,8 +214,15 @@ def PPT_도형텍스트(pptx_경로):
                 continue
             t = 안쪽텍스트(s)
             if t and t.strip():
-                결과.append(t)
+                결과.append({"t": t,
+                             "l": (s.left or 0) / EMU, "top": (s.top or 0) / EMU,
+                             "w": (s.width or 0) / EMU, "h": (s.height or 0) / EMU})
     return 결과
+
+
+def PPT_도형텍스트(pptx_경로):
+    """PPT의 모든 글상자 텍스트를 목록으로 돌려줍니다(그룹 안까지)."""
+    return [d["t"] for d in PPT_도형목록(pptx_경로)]
 
 
 def PPT_월간혜택(도형들):
@@ -265,17 +302,71 @@ def PPT_월간혜택(도형들):
     return [(제목, c) for _, 제목, c in 항목]
 
 
-def PPT_날짜행사(도형들, 주차구간):
+날짜괄호 = r"\((\d{1,2}/\d{1,2}[^)]*)\)"
+
+
+def 행사명_정리(raw):
+    """'패션 초대회 1.5억' → '패션 초대회' 처럼 행사명에 섞인 예산을 떼어냅니다."""
+    n = sp(raw)
+    n = re.sub(r"\s*\d+(?:\.\d+)?\s*억.*$", "", n)
+    return n.strip() or "행사"
+
+
+def _행사도형인가(t):
+    """☆행사명★ 상자, 또는 '② [카드사]' 처럼 번호로 시작하는 이어진 행사 상자인지."""
+    L0 = sp(t.split("\n")[0])
+    return ("☆" in t) or bool(re.match(r"[①②③④⑤]\s*\[", L0))
+
+
+def _박스메모_나누기(t):
+    """
+    행사 상자 안의 '※ ...' 문구(예: '※ 분당 10%', '※ 1인 1회')를
+    상자 안의 각 세부 행사(날짜 괄호 순서)에 나눠 붙입니다.
+      - 날짜 괄호와 같은 줄, 괄호 바로 뒤의 ※ → 그 행사
+      - 그 밖의 ※ → 바로 다음에 나오는 날짜 괄호의 행사 (없으면 마지막 행사)
+    """
+    parens = list(re.finditer(날짜괄호, t))
+    메모 = [[] for _ in parens]
+    if not parens:
+        return 메모
+    for nm in re.finditer(r"※\s*([^\n※]+)", t):
+        글 = sp(nm.group(1))
+        if not 글:
+            continue
+        p = nm.start()
+        k = None
+        for i, pm in enumerate(parens):
+            if pm.end() <= p and "\n" not in t[pm.end():p]:
+                k = i
+        if k is None:
+            뒤 = [i for i, pm in enumerate(parens) if pm.start() > p]
+            k = 뒤[0] if 뒤 else len(parens) - 1
+        메모[k].append(글)
+    return 메모
+
+
+def _겹치는너비(a, b):
+    return min(a["l"] + a["w"], b["l"] + b["w"]) - max(a["l"], b["l"])
+
+
+def PPT_날짜행사(도형목록, 주차구간, 기준월=None):
     """
     PPT에서 '특정 날짜 행사'를 뽑아, 각 행사가 속한 주차에 배치합니다.
-    돌려주는 값: 주차별 목록 [[1주차행사들], [2주차...], ...]
+    도형목록은 PPT_도형목록()의 결과(글자+위치)이며, 글자 목록만 넘겨도 동작합니다.
+    돌려주는 값: (주차별, 로그, 미배치, 메모)
+      - 주차별 : [[1주차행사들], [2주차...], ...]
+      - 미배치 : 날짜가 어느 주차에도 맞지 않아 넣지 못한 행사 (반드시 사용자에게 알림)
+      - 메모   : 행사 상자 밖에 따로 떠 있는 안내 문구 [(문구, 근처 행사명)] (검토용)
     """
+    도형목록 = [d if isinstance(d, dict) else {"t": d} for d in 도형목록]
     주차별 = [[] for _ in 주차구간]
     로그 = []
+    미배치 = []
+    행사도형 = []   # (도형, 행사명) - 떠 있는 메모의 '근처 행사'를 찾을 때 사용
 
-    for t in 도형들:
-        L0 = sp(t.split("\n")[0])
-        if ("☆" not in t) and (not re.match(r"[②③]\s*\[", L0)):
+    for 도형 in 도형목록:
+        t = 도형["t"]
+        if not _행사도형인가(t):
             continue
 
         t1 = sp(t.replace("\n", " "))
@@ -283,11 +374,15 @@ def PPT_날짜행사(도형들, 주차구간):
         t1 = re.sub(r"★\s*신한[^,]*?/\s*네이버[^ ]*억", "", t1)    # A*CLASS식 예산 제거
 
         nm = re.search(r"☆\s*(.+?)\s*★", t)
-        행사명 = sp(nm.group(1)) if nm else ("멤버스 페스티벌" if "멤페" in t else "행사")
+        행사명 = 행사명_정리(nm.group(1)) if nm else ("멤버스 페스티벌" if "멤페" in t else "행사")
+        행사도형.append((도형, 행사명))
 
-        parens = list(re.finditer(r"\((\d{1,2}/\d{1,2}[^)]*)\)", t1))
+        parens = list(re.finditer(날짜괄호, t1))
+        박스메모 = _박스메모_나누기(t)
+        if len(박스메모) != len(parens):          # 혹시 개수가 어긋나면 메모는 붙이지 않음
+            박스메모 = [[] for _ in parens]
         cur = 0
-        for pm in parens:
+        for k, pm in enumerate(parens):
             seg = t1[cur:pm.start()]
             cur = pm.end()
             날짜점포 = 점포정리(sp(pm.group(1)))   # '4개점' → '수/분/평/원'
@@ -312,28 +407,61 @@ def PPT_날짜행사(도형들, 주차구간):
                 카드사 = sp(re.sub(r"\d+\s*%", "", 혜택률)).rstrip("시 ").strip()
                 혜택률 = sp(rm.group(0)) if rm else ""
 
+            # 상자 안 ※ 문구: '분당 10%' 처럼 %가 든 짧은 문구는 혜택률 괄호에 함께 표기,
+            # '1인 1회' 같은 나머지는 ※ 줄로 따로 표기
+            메모들 = 박스메모[k]
+            비율메모 = [m for m in 메모들 if re.search(r"\d+\s*%", m) and len(m) <= 25]
+            기타메모 = [m for m in 메모들 if m not in 비율메모]
+            표시율 = ", ".join([x for x in [혜택률] + 비율메모 if x])
+
             머리 = "ㆍ[{}] ".format(행사명)
             if 카드사:
                 머리 += "[{}] ".format(카드사)
-            머리 += 본문 + ((" ({})".format(혜택률)) if 혜택률 else "")
+            머리 += 본문 + ((" ({})".format(표시율)) if 표시율 else "")
 
             줄들 = [머리]
             노트 = re.search(r"신한P\s*\d+%\s*,\s*네이버페이\s*\d+%", seg)
             if 노트:
                 줄들.append("※ {}".format(sp(노트.group(0))))
+            for m in 기타메모:
+                줄들.append("※ {}".format(m))
             줄들.append("※ {}".format(날짜점포))
 
-            rng = 날짜구간_파싱(날짜점포)
+            rng = 날짜구간_파싱(날짜점포, 기준월)
             덩어리 = "\n".join(줄들)
             로그.append((행사명, 날짜점포))
-            for w in 주차찾기(rng, 주차구간):
+            넣을주차 = 주차찾기(rng, 주차구간)
+            if not 넣을주차:
+                미배치.append((행사명, 날짜점포, 덩어리))
+            for w in 넣을주차:
                 주차별[w].append((rng[0] if rng else 0, 덩어리))
 
     # 각 주차 안에서 날짜 순으로 정렬
     for w in range(len(주차별)):
         주차별[w].sort(key=lambda x: x[0])
         주차별[w] = [c for _, c in 주차별[w]]
-    return 주차별, 로그
+
+    # 행사 상자 밖에 따로 떠 있는 안내 문구 (예: '공개모집 참여 패션 브랜드 限')
+    # → 표의 제목/라벨일 수도 있어 칸에 자동으로 넣지 않고, 검토용 파일에 '참고 메모'로 정리
+    메모 = []
+    for 도형 in 도형목록:
+        t = 도형["t"]
+        글 = sp(t.replace("\n", " "))
+        if (_행사도형인가(t) or "(월간" in t or re.search(r"\[[^\]]*%[^\]]*\]", t)
+                or "판촉 캘린더" in 글 or len(글) <= 3 or 글 in ("사은 리워드",)):
+            continue
+        근처 = ""
+        if "l" in 도형:
+            후보 = [(ev["top"] - 도형["top"], 이름) for ev, 이름 in 행사도형
+                    if "l" in ev and -0.05 <= ev["top"] - 도형["top"] <= 1.2
+                    and _겹치는너비(ev, 도형) > 0.1]
+            이름들 = []
+            for _, 이름 in sorted(후보):
+                if 이름 not in 이름들:
+                    이름들.append(이름)
+            근처 = ", ".join(이름들)
+        메모.append((글, 근처))
+    return 주차별, 로그, 미배치, 메모
 
 
 # ==============================================================================
@@ -478,6 +606,31 @@ def 라이브러리_확인(입력종류):
     return 없음
 
 
+def 문서월_읽기(입력_경로, 입력종류):
+    """입력 파일(PPT/PDF) 제목의 '26년 11월'에서 (연, 월)을 읽습니다."""
+    if 입력종류 == "ppt":
+        글자 = "\n".join(PPT_도형텍스트(입력_경로))
+    else:
+        글자 = PDF_글자(입력_경로)
+    return 연월_찾기(글자)
+
+
+def 사전점검(양식_경로, 입력_경로, 입력종류):
+    """
+    처리 전에 '양식의 주차 기간이 입력 파일의 달과 맞는지' 확인합니다.
+    (지난달 양식에 이번 달 PPT를 넣으면 행사가 주차에 들어가지 못하고 빠지기 때문)
+    돌려주는 값: 경고 문장 (문제 없으면 "")
+    """
+    import openpyxl
+    try:
+        _, 월 = 문서월_읽기(입력_경로, 입력종류)
+        wb = openpyxl.load_workbook(양식_경로, data_only=True)
+        ws = wb[SHEET_NAME] if SHEET_NAME in wb.sheetnames else wb.active
+        return 양식월_확인(주차범위_읽기(ws, 월), 월)
+    except Exception:
+        return ""
+
+
 def 혜택_처리(양식_경로, 입력_경로, 입력종류, 발급포함, 정기포함, 기준폴더=None, 로그=print):
     """
     핵심 처리: 입력 파일에서 혜택을 뽑아 엑셀 노란색 칸을 채우고,
@@ -497,13 +650,15 @@ def 혜택_처리(양식_경로, 입력_경로, 입력종류, 발급포함, 정�
     ws0 = wb0[SHEET_NAME] if SHEET_NAME in wb0.sheetnames else wb0.active
 
     # 입력 파일에서 혜택 추출
+    미배치, 메모 = [], []
     if 입력종류 == "ppt":
-        도형들 = PPT_도형텍스트(입력_경로)
+        도형목록 = PPT_도형목록(입력_경로)
+        도형들 = [d["t"] for d in 도형목록]
         전체글자 = "\n".join(도형들)
         연, 월 = 연월_찾기(전체글자)
         주차구간 = 주차범위_읽기(ws0, 월)
         월간항목 = PPT_월간혜택(도형들)
-        주차행사, 행사로그 = PPT_날짜행사(도형들, 주차구간)
+        주차행사, 행사로그, 미배치, 메모 = PPT_날짜행사(도형목록, 주차구간, 월)
         날짜후보 = None
     else:
         전체글자 = PDF_글자(입력_경로)
@@ -513,6 +668,16 @@ def 혜택_처리(양식_경로, 입력_경로, 입력종류, 발급포함, 정�
         주차행사 = [[] for _ in YELLOW_CELLS]
         행사로그 = []
         날짜후보 = PDF_날짜행사후보(전체글자)
+
+    # 경고 모으기 (놓치면 안 되는 것들)
+    경고 = []
+    월경고 = 양식월_확인(주차구간, 월)
+    if 월경고:
+        경고.append(월경고)
+    if 미배치:
+        경고.append("주차에 넣지 못한 행사 {}건: ".format(len(미배치)) +
+                    ", ".join("{}({})".format(n, d) for n, d, _ in 미배치) +
+                    " → 양식의 주차 기간(E칸)을 확인해 주세요. (검토용 파일에 내용 정리)")
 
     # 발급/정기 포함 여부 반영
     def _포함(제목):
@@ -526,6 +691,9 @@ def 혜택_처리(양식_경로, 입력_경로, 입력종류, 발급포함, 정�
     월표시 = "{}월".format(월) if 월 else "이번달"
     연표시 = "20{}년".format(연) if 연 else ""
     로그("\n[문서 인식] {} {}".format(연표시, 월표시))
+    로그("[양식 주차 기간] " + " / ".join(
+        "{}주차 {}".format(i + 1, (str(ws0[c].value or "").strip().splitlines() or [""])[-1])
+        for i, c in enumerate(PERIOD_CELLS)))
     로그("[월간 공통 혜택] 총 {}건".format(len(월간항목)))
     for 제목, _ in 월간항목:
         로그("   - " + 제목)
@@ -534,7 +702,14 @@ def 혜택_처리(양식_경로, 입력_경로, 입력종류, 발급포함, 정�
     if not 정기포함:
         로그("   (신한Plus 정기 혜택은 제외)")
     if 입력종류 == "ppt":
-        로그("[특정 날짜 행사] 총 {}건 (주차별 배치)".format(len(행사로그)))
+        로그("[특정 날짜 행사] 총 {}건".format(len(행사로그)))
+        for i, lst in enumerate(주차행사):
+            이름들 = [re.match(r"ㆍ\[([^\]]+)\]", c).group(1) for c in lst if re.match(r"ㆍ\[([^\]]+)\]", c)]
+            로그("   · {}주차: {}".format(i + 1, ", ".join(이름들) if 이름들 else "없음"))
+        if 메모:
+            로그("[참고 메모] 행사 상자 밖 안내 문구 {}건 → 검토용 파일에 정리".format(len(메모)))
+    for w in 경고:
+        로그("\n⚠ 주의: " + w)
 
     # 주차 칸 내용 만들기
     셀내용 = {}
@@ -562,8 +737,13 @@ def 혜택_처리(양식_경로, 입력_경로, 입력종류, 발급포함, 정�
             주차기간표시.append("")
     with open(검토_경로, "w", encoding="utf-8") as f:
         f.write("=" * 70 + "\n")
-        f.write(" {} {} 카드 사은혜택 - 검토용 정리\n".format(연표시, 월표시))
+        f.write(" {} {} 카드 사은혜택 - 검토용 정리  (프로그램 버전 {})\n".format(연표시, 월표시, 프로그램_버전))
         f.write("=" * 70 + "\n\n")
+        if 경고:
+            f.write("⚠ 꼭 확인하세요\n")
+            for w in 경고:
+                f.write("  - " + w + "\n")
+            f.write("\n")
         f.write("아래 내용이 엑셀 결과 파일의 각 주차 노란색 칸에 들어갔습니다.\n")
         f.write("원본과 비교해 확인해 주세요.\n\n")
         for i, cell in enumerate(YELLOW_CELLS):
@@ -579,6 +759,20 @@ def 혜택_처리(양식_경로, 입력_경로, 입력종류, 발급포함, 정�
             f.write("=" * 70 + "\n")
             for 줄, 날짜들 in 날짜후보:
                 f.write("· (날짜: {})\n   {}\n\n".format(", ".join(날짜들), 줄))
+        if 미배치:
+            f.write("\n\n" + "=" * 70 + "\n")
+            f.write("[주의] 날짜가 양식의 어느 주차에도 맞지 않아 엑셀에 넣지 못한 행사\n")
+            f.write("       양식의 주차 기간(E칸)이 이번 달과 맞는지 확인한 뒤 다시 실행하세요.\n")
+            f.write("=" * 70 + "\n")
+            for _, _, 덩어리 in 미배치:
+                f.write(덩어리 + "\n\n")
+        if 메모:
+            f.write("\n\n" + "=" * 70 + "\n")
+            f.write("[참고 메모] PPT에서 행사 상자 밖에 따로 적혀 있던 안내 문구\n")
+            f.write("       (표 제목/라벨일 수도 있어 칸에 자동으로 넣지 않았습니다. 필요하면 직접 추가)\n")
+            f.write("=" * 70 + "\n")
+            for 글, 근처 in 메모:
+                f.write("· {}{}\n".format(글, "   (근처 행사: {})".format(근처) if 근처 else ""))
     로그("[완료] 검토용 파일: " + os.path.basename(검토_경로))
 
     return {
@@ -587,12 +781,15 @@ def 혜택_처리(양식_경로, 입력_경로, 입력종류, 발급포함, 정�
         "연": 연, "월": 월,
         "월간제목들": [t for t, _ in 월간항목],
         "주차행사건수": [len(x) for x in 주차행사],
+        "경고": 경고,
+        "미배치": [(n, d) for n, d, _ in 미배치],
+        "메모": 메모,
     }
 
 
 def main():
     print("=" * 60)
-    print(" AK PLAZA 카드 사은혜택 자동 입력 프로그램")
+    print(" AK PLAZA 카드 사은혜택 자동 입력 프로그램  (버전 {})".format(프로그램_버전))
     print("=" * 60)
 
     기준폴더 = os.path.dirname(os.path.abspath(__file__))
@@ -646,11 +843,22 @@ def main():
     if 정기포함 is None:
         정기포함 = 예_아니오("  · 신한Plus 정기 혜택 포함?", True)
 
+    # 2-3) 양식과 입력 파일의 달이 맞는지 점검 (지난달 양식이면 행사가 빠질 수 있음)
+    월경고 = 사전점검(양식_경로, 입력_경로, 입력종류)
+    if 월경고:
+        print("\n⚠ 주의: " + 월경고)
+        if not 예_아니오("  그래도 계속할까요?", False):
+            print("\n중단했습니다. 이번 달 양식으로 바꾼 뒤 다시 실행해 주세요.")
+            sys.exit(1)
+
     # 3) 처리 실행
-    혜택_처리(양식_경로, 입력_경로, 입력종류, 발급포함, 정기포함, 기준폴더, 로그=print)
+    결과 = 혜택_처리(양식_경로, 입력_경로, 입력종류, 발급포함, 정기포함, 기준폴더, 로그=print)
 
     print("\n" + "=" * 60)
-    print(" 끝났습니다! 결과 엑셀 파일을 열어 확인해 주세요.")
+    if 결과.get("경고"):
+        print(" 끝났습니다. 단, 위의 ⚠ 주의 내용을 꼭 확인해 주세요!")
+    else:
+        print(" 끝났습니다! 결과 엑셀 파일을 열어 확인해 주세요.")
     print("=" * 60)
 
 

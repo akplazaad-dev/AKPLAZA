@@ -68,7 +68,7 @@ def 경로정리(raw):
 class 앱:
     def __init__(self, root):
         self.root = root
-        root.title("AK PLAZA 카드 사은혜택 자동 입력")
+        root.title("AK PLAZA 카드 사은혜택 자동 입력  (버전 {})".format(core.프로그램_버전))
         root.configure(bg=배경)
         try:
             root.geometry("640x620")
@@ -186,9 +186,16 @@ class 앱:
                     self.실행btn.config(state="normal", text="▶  엑셀 만들기")
                     self.열기btn.config(state="normal")
                     이름 = os.path.basename(결과.get("결과경로", ""))
-                    messagebox.showinfo("완료",
-                                        "엑셀 파일을 만들었습니다!\n\n" + 이름 +
-                                        "\n\n'결과 폴더 열기' 버튼으로 확인하세요.")
+                    경고 = 결과.get("경고") or []
+                    if 경고:
+                        messagebox.showwarning("완료 - 꼭 확인하세요",
+                                               "엑셀 파일은 만들었지만, 확인이 필요한 내용이 있습니다.\n\n" +
+                                               "\n\n".join("⚠ " + w for w in 경고) +
+                                               "\n\n결과 파일: " + 이름)
+                    else:
+                        messagebox.showinfo("완료",
+                                            "엑셀 파일을 만들었습니다!\n\n" + 이름 +
+                                            "\n\n'결과 폴더 열기' 버튼으로 확인하세요.")
                 elif 종류 == "error":
                     메시지, 자세히 = 값
                     self._화면에로그("\n[오류] " + 메시지)
@@ -251,6 +258,14 @@ class 앱:
             messagebox.showerror("부품 필요",
                                  "다음 부품이 설치되어 있지 않습니다:\n" + ", ".join(없음) +
                                  "\n\n먼저 '최초설치.bat' 을 한 번 실행해 주세요.")
+            return
+        # 양식(주차 기간)과 PPT/PDF의 달이 맞는지 점검 → 지난달 양식이면 행사가 빠질 수 있음
+        월경고 = core.사전점검(양식, 입력, 종류)
+        if 월경고 and not messagebox.askyesno(
+                "양식 확인",
+                "⚠ " + 월경고 + "\n\n지금 선택된 양식: " + os.path.basename(양식) +
+                "\n\n그래도 계속할까요?\n('아니요'를 누르고 ① 칸에 이번 달 양식을 넣는 것을 권장합니다.)",
+                default="no"):
             return
         # 로그 비우기
         self.로그창.config(state="normal"); self.로그창.delete("1.0", "end")
