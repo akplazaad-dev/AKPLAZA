@@ -71,8 +71,8 @@ class 앱:
         root.title("AK PLAZA 카드 사은혜택 자동 입력  (버전 {})".format(core.프로그램_버전))
         root.configure(bg=배경)
         try:
-            root.geometry("640x620")
-            root.minsize(560, 560)
+            root.geometry("640x650")
+            root.minsize(560, 590)
         except Exception:
             pass
 
@@ -80,6 +80,7 @@ class 앱:
         self.입력_경로 = tk.StringVar()
         self.발급포함 = tk.BooleanVar(value=True)
         self.정기포함 = tk.BooleanVar(value=True)
+        self.에이클래스포함 = tk.BooleanVar(value=True)
         self.마지막결과폴더 = None
         self.작업큐 = queue.Queue()   # 워커 스레드 → 메인스레드 전달용
 
@@ -137,6 +138,9 @@ class 앱:
         tk.Checkbutton(box, text="신한Plus 발급①/발급② 혜택 포함", variable=self.발급포함,
                        bg=배경, font=글꼴, anchor="w").pack(fill="x")
         tk.Checkbutton(box, text="신한Plus 정기 혜택 포함", variable=self.정기포함,
+                       bg=배경, font=글꼴, anchor="w").pack(fill="x")
+        tk.Checkbutton(box, text="{} 행사 포함 (PPT)".format(core.에이클래스_행사명),
+                       variable=self.에이클래스포함,
                        bg=배경, font=글꼴, anchor="w").pack(fill="x")
 
     def _실행버튼(self):
@@ -277,10 +281,12 @@ class 앱:
 
         발급 = self.발급포함.get()
         정기 = self.정기포함.get()
+        에이클래스 = self.에이클래스포함.get()
 
         def 작업():
             try:
-                결과 = core.혜택_처리(양식, 입력, 종류, 발급, 정기, 폴더, 로그=self._로그출력)
+                결과 = core.혜택_처리(양식, 입력, 종류, 발급, 정기, 폴더, 로그=self._로그출력,
+                                   에이클래스포함=에이클래스)
                 self._로그출력("\n=== 완료! '결과 폴더 열기' 버튼으로 확인하세요. ===")
                 self.작업큐.put(("done", (결과, 폴더)))
             except Exception as e:
